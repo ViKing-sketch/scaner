@@ -2,13 +2,15 @@
 
 #include "Camera.hpp"
 #include "Controller.hpp"
-#include "Film.hpp"
+#include "ScanGeometry.hpp"
 #include <atomic>
 #include <memory>
 #include <opencv2/core/types.hpp>
 #include <opencv2/opencv.hpp>
 #include <thread>
 #include <unordered_map>
+
+class ScanSession;
 
 class Scanner {
 public:
@@ -34,6 +36,9 @@ public:
       if(y > 0)
         m_coefs.y_steps_in_pixsel = y;
     }
+
+    /// Применяется со следующего StartScan. Шаги моторов не меняет.
+    void SetScanGeometry(ScanGeometry geometry) { m_geometry = ScanGeometry::Normalized(geometry); }
 
 private:
     void WorkerLoop();
@@ -78,7 +83,8 @@ private:
 
     Controller& m_controller;
     Camera& m_camera;
-    Film m_film;
+    std::unique_ptr<ScanSession> m_session;
+    ScanGeometry m_geometry;
     std::atomic<bool> m_running = false;
     bool m_foce_canceled_unsafe = false;
     int m_cur_camera_pos = -1;

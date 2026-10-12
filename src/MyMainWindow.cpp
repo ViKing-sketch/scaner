@@ -34,8 +34,18 @@
 #include <tape_scanner/scanner/Utils.hpp>
 
 #include <Windows.h>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <cstring>
+
+double safeStrToDouble(const wxString &value) {
+  return safeStrToDouble(value.ToStdString());
+}
+
+int safeStrToInt(const wxString &value) {
+  return safeStrToInt(value.ToStdString());
+}
 #include <fstream>
 #include <vector>
 #include <ctime>
@@ -89,6 +99,9 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["width"] = scan_width_default.c_str().AsChar();
     settings["scan"]["height"] = scan_height_default.c_str().AsChar();
     settings["scan"]["ppm"] = scan_ppm_default.c_str().AsChar();
+    settings["scan"]["bin"] = scan_bin_default.c_str().AsChar();
+    settings["scan"]["pixel_um_x"] = scan_pixel_um_x_default.c_str().AsChar();
+    settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
     create = true;
   }
   if (!settings.has("settings") || !settings["settings"].has("language")) {
@@ -159,6 +172,19 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["ppm"] = scan_ppm_default.c_str().AsChar();
     update = true;
   }
+  // ppm остаётся в файле для старых настроек и не задаёт ни шаг каретки, ни Pixel Spacing.
+  if (!settings.has("scan") || !settings["scan"].has("bin")) {
+    settings["scan"]["bin"] = scan_bin_default.c_str().AsChar();
+    update = true;
+  }
+  if (!settings.has("scan") || !settings["scan"].has("pixel_um_x")) {
+    settings["scan"]["pixel_um_x"] = scan_pixel_um_x_default.c_str().AsChar();
+    update = true;
+  }
+  if (!settings.has("scan") || !settings["scan"].has("pixel_um_y")) {
+    settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
+    update = true;
+  }
   m_controller_ip_address_text->SetValue(wxString(settings["controller"]["ip_address"]));
   m_controller_net_mask_text->SetValue(wxString(settings["controller"]["net_mask"]));
   m_controller_gateway_text->SetValue(wxString(settings["controller"]["gateway"]));
@@ -185,6 +211,7 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   autosave_camera_exposure_time = m_camera_exposure_time_text->GetValue();
   autosave_scan_width = m_scan_width_text->GetValue();
   autosave_scan_height = m_scan_length_text->GetValue();
+  SetupScanGeometryControls();
   if (create) _settings_file_create(true);
   if (update) _settings_file_update(true);
   // start timers
@@ -192,11 +219,12 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   m_controller_timer.Start( 2000 );
   m_camera_timer.Start( 1000 );
 
-  m_window_level_scroll_bar->SetRange(65535);
+  m_window_level_scroll_bar->SetRange(65536);
   m_window_level_scroll_bar->SetThumbPosition(500);
 
-  m_window_width_scroll_bar->SetRange(65535);
+  m_window_width_scroll_bar->SetRange(65536);
   m_window_width_scroll_bar->SetThumbPosition(500);
+  SetupViewerTools();
 
   m_frame_window_level->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
   m_frame_window_width->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
@@ -275,6 +303,24 @@ void MyMainWindow::OnServiceTimer( wxTimerEvent& event ) {
   if (autosave_scan_height != m_scan_length_text->GetValue()) {
     autosave_scan_height = m_scan_length_text->GetValue();
     settings["scan"]["height"] = autosave_scan_height.c_str();
+    update++;
+  }
+  if (m_scan_bin_choice) {
+    const wxString bin_value = m_scan_bin_choice->GetSelection() == 1 ? wxT("1") : wxT("2");
+    if (autosave_scan_bin != bin_value) {
+      autosave_scan_bin = bin_value;
+      settings["scan"]["bin"] = autosave_scan_bin.c_str();
+      update++;
+    }
+  }
+  if (m_pixel_um_x_text && autosave_pixel_um_x != m_pixel_um_x_text->GetValue()) {
+    autosave_pixel_um_x = m_pixel_um_x_text->GetValue();
+    settings["scan"]["pixel_um_x"] = autosave_pixel_um_x.c_str();
+    update++;
+  }
+  if (m_pixel_um_y_text && autosave_pixel_um_y != m_pixel_um_y_text->GetValue()) {
+    autosave_pixel_um_y = m_pixel_um_y_text->GetValue();
+    settings["scan"]["pixel_um_y"] = autosave_pixel_um_y.c_str();
     update++;
   }
   if (update) _settings_file_update();
@@ -410,6 +456,7 @@ void MyMainWindow::OnAbout(wxCommandEvent& event) {
 void MyMainWindow::OnLanguageEnglish(wxCommandEvent& event) {
   lng->set(wxT("English"));
   lng->translate_frame(this, wxT("LAST"), wxT("CURRENT"));
+  ReloadScanBinChoice();
   settings["settings"]["language"] = "English";
   _settings_file_update();
 }
@@ -417,6 +464,7 @@ void MyMainWindow::OnLanguageEnglish(wxCommandEvent& event) {
 void MyMainWindow::OnLanguageRussian(wxCommandEvent& event) {
   lng->set(wxT("Russian"));
   lng->translate_frame(this, wxT("LAST"), wxT("CURRENT"));
+  ReloadScanBinChoice();
   settings["settings"]["language"] = "Russian";
   _settings_file_update();
 }
@@ -434,6 +482,141 @@ void MyMainWindow::OnLightOnlyWhenCapture(wxCommandEvent &event)
   m_scanner->SetLightOnlyWhenCapture(m_checkBox_light_only_when_capture->GetValue());
 }
 
+void MyMainWindow::ReloadScanBinChoice() {
+  if (!m_scan_bin_choice || m_updating_scan_mode) {
+    return;
+  }
+  m_updating_scan_mode = true;
+
+  const auto read_um = [](wxTextCtrl *box) {
+    if (!box) {
+      return kNominalPixelUm;
+    }
+    const double value = safeStrToDouble(box->GetValue());
+    return value > 0.0 ? value : kNominalPixelUm;
+  };
+  const double um_x = read_um(m_pixel_um_x_text);
+  const double um_y = read_um(m_pixel_um_y_text);
+  const wxString unit = (lng && lng->get() == wxT("Russian")) ? wxT("мкм") : wxT("um");
+  const int sel = m_scan_bin_choice->GetSelection();
+
+  auto label = [&](int bin, const wxString &dpi) {
+    const std::string pitch_x = FormatPitchUm(um_x, bin);
+    const std::string pitch_y = FormatPitchUm(um_y, bin);
+    const wxString x_text = wxString::FromUTF8(pitch_x.c_str());
+    const wxString y_text = wxString::FromUTF8(pitch_y.c_str());
+    if (pitch_x == pitch_y) {
+      return wxString::Format("%s (%s %s)", dpi, x_text, unit);
+    }
+    return wxString::Format("%s (%s x %s %s)", dpi, x_text, y_text, unit);
+  };
+
+  m_scan_bin_choice->Clear();
+  m_scan_bin_choice->Append(label(2, wxT("600 dpi")));
+  m_scan_bin_choice->Append(label(1, wxT("1200 dpi")));
+  m_scan_bin_choice->SetSelection(sel == 1 ? 1 : 0);
+  m_updating_scan_mode = false;
+}
+
+void MyMainWindow::SetupScanGeometryControls() {
+  wxWindow *scan_box = m_checkBox_light_only_when_capture->GetParent();
+  wxSizer *scan_sizer = nullptr;
+  if (scan_box && m_panel3 && m_panel3->GetSizer()) {
+    wxSizer *outer = m_panel3->GetSizer();
+    for (size_t i = 0; i < outer->GetItemCount(); ++i) {
+      wxSizerItem *item = outer->GetItem(i);
+      if (!item->IsSizer()) {
+        continue;
+      }
+      auto *box_sizer = dynamic_cast<wxStaticBoxSizer *>(item->GetSizer());
+      if (box_sizer && box_sizer->GetStaticBox() == scan_box) {
+        scan_sizer = box_sizer;
+        break;
+      }
+    }
+  }
+  if (!scan_sizer) {
+    return;
+  }
+
+  auto labelOf = [this](const wxString &english) {
+    return lng->translate(english, wxT("English"), wxT("CURRENT"));
+  };
+
+  m_pixel_um_x_text = new wxTextCtrl(scan_box, wxID_ANY);
+  m_pixel_um_x_text->SetMinSize(wxSize(80, -1));
+  m_pixel_um_y_text = new wxTextCtrl(scan_box, wxID_ANY);
+  m_pixel_um_y_text->SetMinSize(wxSize(80, -1));
+  m_scan_bin_choice = new wxChoice(scan_box, wxID_ANY);
+  m_scan_bin_choice->SetMinSize(wxSize(240, -1));
+
+  auto makeRow = [&](const wxString &label, wxWindow *field) {
+    auto *row = new wxBoxSizer(wxHORIZONTAL);
+    auto *text = new wxStaticText(scan_box, wxID_ANY, label, wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT);
+    row->Add(text, 0, wxALL, 8);
+    row->Add(field, 0, wxALL, 5);
+    return row;
+  };
+
+  int insert_at = static_cast<int>(scan_sizer->GetItemCount());
+  for (size_t i = 0; i < scan_sizer->GetItemCount(); ++i) {
+    wxSizerItem *item = scan_sizer->GetItem(i);
+    if (item->IsSizer() && item->GetSizer()->GetItem(m_dst_scan_file_path)) {
+      insert_at = static_cast<int>(i);
+      break;
+    }
+  }
+
+  scan_sizer->Insert(insert_at, makeRow(labelOf(wxT("Resolution:")), m_scan_bin_choice), 0, wxEXPAND, 5);
+  scan_sizer->Insert(insert_at + 1, makeRow(labelOf(wxT("Pixel pitch X, um:")), m_pixel_um_x_text), 0, wxEXPAND, 5);
+  scan_sizer->Insert(insert_at + 2, makeRow(labelOf(wxT("Pixel pitch Y, um:")), m_pixel_um_y_text), 0, wxEXPAND, 5);
+
+  auto makeRulerRow = [&](const wxString &label, wxTextCtrl *&mm, wxTextCtrl *&pixels, const wxString &apply_label, bool along_x) {
+    mm = new wxTextCtrl(scan_box, wxID_ANY);
+    pixels = new wxTextCtrl(scan_box, wxID_ANY);
+    mm->SetMinSize(wxSize(70, -1));
+    pixels->SetMinSize(wxSize(70, -1));
+    auto *row = new wxBoxSizer(wxHORIZONTAL);
+    row->Add(new wxStaticText(scan_box, wxID_ANY, label, wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT), 0, wxALL, 8);
+    row->Add(mm, 0, wxALL, 5);
+    row->Add(new wxStaticText(scan_box, wxID_ANY, labelOf(wxT("px:"))), 0, wxALL, 8);
+    row->Add(pixels, 0, wxALL, 5);
+    auto *apply = new wxButton(scan_box, wxID_ANY, apply_label);
+    apply->Bind(wxEVT_BUTTON, [this, along_x](wxCommandEvent &) { ApplyRulerPitch(along_x); });
+    row->Add(apply, 0, wxALL, 5);
+    return row;
+  };
+  scan_sizer->Insert(insert_at + 3,
+                     makeRulerRow(labelOf(wxT("Ruler X, mm:")), m_ruler_mm_x, m_ruler_px_x, labelOf(wxT("Apply X")), true),
+                     0, wxEXPAND, 5);
+  scan_sizer->Insert(insert_at + 4,
+                     makeRulerRow(labelOf(wxT("Ruler Y, mm:")), m_ruler_mm_y, m_ruler_px_y, labelOf(wxT("Apply Y")), false),
+                     0, wxEXPAND, 5);
+  scan_sizer->Insert(insert_at + 5,
+                     new wxStaticText(scan_box, wxID_ANY,
+                                      labelOf(wxT("Pixels are counted on the saved grid; optical pitch divides by bin."))),
+                     0, wxALL, 8);
+
+  m_pixel_um_x_text->SetValue(wxString(settings["scan"]["pixel_um_x"]));
+  m_pixel_um_y_text->SetValue(wxString(settings["scan"]["pixel_um_y"]));
+  m_scan_bin_choice->Append(wxT("600 dpi"));
+  m_scan_bin_choice->Append(wxT("1200 dpi"));
+  m_scan_bin_choice->SetSelection(std::string(settings["scan"]["bin"]) == "1" ? 1 : 0);
+  ReloadScanBinChoice();
+  m_pixel_um_x_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
+  m_pixel_um_y_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
+  m_scan_bin_choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
+  autosave_scan_bin = m_scan_bin_choice->GetSelection() == 1 ? wxT("1") : wxT("2");
+  autosave_pixel_um_x = m_pixel_um_x_text->GetValue();
+  autosave_pixel_um_y = m_pixel_um_y_text->GetValue();
+
+  scan_box->Layout();
+  if (m_panel3) {
+    m_panel3->Layout();
+  }
+  Layout();
+}
+
 void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   if(!InitScanner()) {
     return;
@@ -443,7 +626,56 @@ void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue());
   m_scanner->SetStepsByPerPixel(steps_by_peer_pix_x, steps_by_peer_pix_y);
 
-  m_scanner->StartScan(m_dst_scan_file_path->GetPath());
+  ScanGeometry geometry;
+  geometry.bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
+  if (m_pixel_um_x_text) {
+    geometry.pixel_um_x = safeStrToDouble(m_pixel_um_x_text->GetValue());
+  }
+  if (m_pixel_um_y_text) {
+    geometry.pixel_um_y = safeStrToDouble(m_pixel_um_y_text->GetValue());
+  }
+  if (!(geometry.pixel_um_x > 0.0) || !(geometry.pixel_um_y > 0.0)) {
+    wxLogWarning("Pixel pitch must be positive; nominal 21 um is used");
+  }
+  geometry = ScanGeometry::Normalized(geometry);
+  m_scanner->SetScanGeometry(geometry);
+
+  m_scanner->StartScan(m_dst_scan_file_path->GetPath().ToStdString());
+}
+
+void MyMainWindow::ApplyRulerPitch(bool along_x) {
+  wxTextCtrl *mm_box = along_x ? m_ruler_mm_x : m_ruler_mm_y;
+  wxTextCtrl *px_box = along_x ? m_ruler_px_x : m_ruler_px_y;
+  wxTextCtrl *dest = along_x ? m_pixel_um_x_text : m_pixel_um_y_text;
+  if (!mm_box || !px_box || !dest) {
+    return;
+  }
+  const int bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
+  double optical_um = 0;
+  if (!OpticalPitchFromSavedGrid(safeStrToDouble(mm_box->GetValue()), safeStrToDouble(px_box->GetValue()), bin, optical_um)) {
+    wxLogWarning("Ruler distance and pixel count must be positive");
+    return;
+  }
+  dest->SetValue(wxString::FromUTF8(FormatPitchUm(optical_um, 1)));
+}
+
+void MyMainWindow::OnRulerPixels(bool along_x, double pixels) {
+  wxTextCtrl *px_box = along_x ? m_ruler_px_x : m_ruler_px_y;
+  if (px_box) {
+    px_box->SetValue(wxString::FromUTF8(FormatPitchUm(pixels, 1)));
+  }
+  m_updating_ruler = true;
+  if (m_pick_x_btn) {
+    m_pick_x_btn->SetValue(false);
+  }
+  if (m_pick_y_btn) {
+    m_pick_y_btn->SetValue(false);
+  }
+  m_updating_ruler = false;
+  wxTextCtrl *mm_box = along_x ? m_ruler_mm_x : m_ruler_mm_y;
+  if (mm_box && safeStrToDouble(mm_box->GetValue()) > 0.0) {
+    ApplyRulerPitch(along_x);
+  }
 }
 
 void MyMainWindow::OnScanStop( wxCommandEvent& event ) {
@@ -956,21 +1188,20 @@ void MyMainWindow::OnDCMFileOpen(wxCommandEvent& event)
     // setup opened file info/data/controls
     open_file_tmp_path = open_file_path + ".bmp";
     open_file_frame = 1;
-    open_file_window_level = 500;
-    open_file_window_width = 500;
+    const WindowLevel fitted = m_dcm_processor.CurrentWindow();
+    ShowWindow(static_cast<int>(std::lround(fitted.center)), static_cast<int>(std::lround(fitted.width)));
     open_file_rotation = 0;
     open_file_flip = 0;
     m_current_frame->SetValue(wxString::Format("%i", m_dcm_processor.GetCurFrameNum() + 1));
-    m_frame_window_level->SetValue(wxString::Format("%i",open_file_window_level));
-    m_frame_window_width->SetValue(wxString::Format("%i",open_file_window_width));
-    m_window_level_scroll_bar->SetThumbPosition(open_file_window_level);
-    m_window_width_scroll_bar->SetThumbPosition(open_file_window_width);
     m_rotation0_btn->SetValue(true);
     m_rotation90Left_btn->SetValue(false);
     m_rotation90Right_btn->SetValue(false);
     m_rotation180_btn->SetValue(false);
     m_flipH_btn->SetValue(false);
     m_flipV_btn->SetValue(false);
+    if (m_invert_btn) {
+      m_invert_btn->SetValue(false);
+    }
     // display file tags data
     DcmDataset* dataset = file.getDataset();
     OFString str;
@@ -1018,33 +1249,39 @@ void MyMainWindow::OnCurrentFrameNext( wxCommandEvent& event ) {
 }
 
 void MyMainWindow::OnWindowLevelChange( wxCommandEvent& event ) {
-  int level = 500;
+  if (m_updating_window) {
+    return;
+  }
+  int level = open_file_window_level;
   m_frame_window_level->GetValue().ToInt(&level);
-  m_window_level_scroll_bar->SetThumbPosition(level);
-
-  const float range = m_window_level_scroll_bar->GetRange();
-  m_dcm_processor.SetBright(1.0f - (range - level) / range);
+  ShowWindow(level, open_file_window_width);
+  m_dcm_processor.SetWindow(open_file_window_level, open_file_window_width);
 }
 
 void MyMainWindow::OnWindowLevelScroll(wxScrollEvent& win_level_data){
-  const float range = m_window_level_scroll_bar->GetRange();
-  m_dcm_processor.SetBright(1.0f - (range - win_level_data.GetInt()) / range);
-  m_frame_window_level->SetValue(wxString::Format(wxT("%i"), win_level_data.GetInt()));
+  if (m_updating_window) {
+    return;
+  }
+  ShowWindow(win_level_data.GetInt(), open_file_window_width);
+  m_dcm_processor.SetWindow(open_file_window_level, open_file_window_width);
 }
 
 void MyMainWindow::OnWindowWidthChange( wxCommandEvent& event ) {
-  int width = 500;
+  if (m_updating_window) {
+    return;
+  }
+  int width = open_file_window_width;
   m_frame_window_width->GetValue().ToInt(&width);
-  m_window_width_scroll_bar->SetThumbPosition(width);
-
-  const float range = m_window_width_scroll_bar->GetRange();
-  m_dcm_processor.SetContrast(1.0f - (range - width) / range);
+  ShowWindow(open_file_window_level, width);
+  m_dcm_processor.SetWindow(open_file_window_level, open_file_window_width);
 }
 
 void MyMainWindow::OnWindowWidthScroll(wxScrollEvent& win_width_data){
-  const float range = m_window_width_scroll_bar->GetRange();
-  m_dcm_processor.SetContrast(1.0f - (range - win_width_data.GetInt()) / range);
-  m_frame_window_width->SetValue(wxString::Format(wxT("%i"), win_width_data.GetInt()));
+  if (m_updating_window) {
+    return;
+  }
+  ShowWindow(open_file_window_level, win_width_data.GetInt());
+  m_dcm_processor.SetWindow(open_file_window_level, open_file_window_width);
 }
 
 void MyMainWindow::OnFrameRotate0( wxCommandEvent& event ) {
@@ -1053,6 +1290,7 @@ void MyMainWindow::OnFrameRotate0( wxCommandEvent& event ) {
   m_rotation90Left_btn->SetValue(false);
   m_rotation90Right_btn->SetValue(false);
   m_rotation180_btn->SetValue(false);
+  ApplyOrientation();
 }
 
 void MyMainWindow::OnFrameRotate90Left( wxCommandEvent& event ) {
@@ -1061,6 +1299,7 @@ void MyMainWindow::OnFrameRotate90Left( wxCommandEvent& event ) {
   m_rotation90Left_btn->SetValue(true);
   m_rotation90Right_btn->SetValue(false);
   m_rotation180_btn->SetValue(false);
+  ApplyOrientation();
 }
 
 void MyMainWindow::OnFrameRotate90Right( wxCommandEvent& event ) {
@@ -1069,6 +1308,7 @@ void MyMainWindow::OnFrameRotate90Right( wxCommandEvent& event ) {
   m_rotation90Left_btn->SetValue(false);
   m_rotation90Right_btn->SetValue(true);
   m_rotation180_btn->SetValue(false);
+  ApplyOrientation();
 }
 
 void MyMainWindow::OnFrameRotate180( wxCommandEvent& event ) {
@@ -1077,6 +1317,7 @@ void MyMainWindow::OnFrameRotate180( wxCommandEvent& event ) {
   m_rotation90Left_btn->SetValue(false);
   m_rotation90Right_btn->SetValue(false);
   m_rotation180_btn->SetValue(true);
+  ApplyOrientation();
 }
 
 void MyMainWindow::OnFrameFlipHorizontally( wxCommandEvent& event ) {
@@ -1084,6 +1325,7 @@ void MyMainWindow::OnFrameFlipHorizontally( wxCommandEvent& event ) {
   if (m_flipH_btn->GetValue() && !m_flipV_btn->GetValue()) {open_file_flip = 1;}
   if (!m_flipH_btn->GetValue() && m_flipV_btn->GetValue()) {open_file_flip = 2;}
   if (m_flipH_btn->GetValue() && m_flipV_btn->GetValue()) {open_file_flip = -1;}
+  ApplyOrientation();
 }
 
 void MyMainWindow::OnFrameFlipVertically( wxCommandEvent& event ) {
@@ -1091,6 +1333,77 @@ void MyMainWindow::OnFrameFlipVertically( wxCommandEvent& event ) {
   if (m_flipH_btn->GetValue() && !m_flipV_btn->GetValue()) {open_file_flip = 1;}
   if (!m_flipH_btn->GetValue() && m_flipV_btn->GetValue()) {open_file_flip = 2;}
   if (m_flipH_btn->GetValue() && m_flipV_btn->GetValue()) {open_file_flip = -1;}
+  ApplyOrientation();
+}
+
+void MyMainWindow::SetupViewerTools() {
+  if (m_flipH_btn && m_flipH_btn->GetContainingSizer()) {
+    m_invert_btn = new wxToggleButton(m_flipH_btn->GetParent(), wxID_ANY, _("Invert"));
+    m_flipH_btn->GetContainingSizer()->Add(m_invert_btn, 0, wxALL, 5);
+    m_invert_btn->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent &) {
+      m_dcm_processor.SetInvert(m_invert_btn->GetValue());
+    });
+    m_flipH_btn->GetParent()->Layout();
+  }
+  if (m_flipH_btn && m_flipH_btn->GetContainingSizer()) {
+    auto *parent = m_flipH_btn->GetParent();
+    auto *sizer = m_flipH_btn->GetContainingSizer();
+    auto labelOf = [this](const wxString &english) {
+      return lng->translate(english, wxT("English"), wxT("CURRENT"));
+    };
+    auto arm = [this](wxToggleButton *mine, wxToggleButton *other, bool along_x) {
+      if (m_updating_ruler) {
+        return;
+      }
+      if (!m_gl_image_canvas) {
+        return;
+      }
+      if (mine->GetValue()) {
+        m_updating_ruler = true;
+        if (other) {
+          other->SetValue(false);
+        }
+        m_updating_ruler = false;
+        m_gl_image_canvas->BeginRuler(along_x);
+      } else {
+        m_gl_image_canvas->CancelRuler();
+      }
+    };
+    m_pick_x_btn = new wxToggleButton(parent, wxID_ANY, labelOf(wxT("Pick X")));
+    m_pick_y_btn = new wxToggleButton(parent, wxID_ANY, labelOf(wxT("Pick Y")));
+    sizer->Add(m_pick_x_btn, 0, wxALL, 5);
+    sizer->Add(m_pick_y_btn, 0, wxALL, 5);
+    m_pick_x_btn->Bind(wxEVT_TOGGLEBUTTON, [this, arm](wxCommandEvent &) { arm(m_pick_x_btn, m_pick_y_btn, true); });
+    m_pick_y_btn->Bind(wxEVT_TOGGLEBUTTON, [this, arm](wxCommandEvent &) { arm(m_pick_y_btn, m_pick_x_btn, false); });
+    parent->Layout();
+  }
+  if (m_gl_image_canvas) {
+    m_gl_image_canvas->SetWindowHandler([this](int center, int width) { ShowWindow(center, width); });
+    m_gl_image_canvas->SetRulerHandler([this](bool along_x, double pixels) { OnRulerPixels(along_x, pixels); });
+  }
+}
+
+void MyMainWindow::ShowWindow(int center, int width) {
+  m_updating_window = true;
+  open_file_window_level = std::clamp(center, 0, 65535);
+  open_file_window_width = std::clamp(width, 1, 65535);
+  if (m_frame_window_level) {
+    m_frame_window_level->ChangeValue(wxString::Format("%i", open_file_window_level));
+  }
+  if (m_frame_window_width) {
+    m_frame_window_width->ChangeValue(wxString::Format("%i", open_file_window_width));
+  }
+  if (m_window_level_scroll_bar) {
+    m_window_level_scroll_bar->SetThumbPosition(open_file_window_level);
+  }
+  if (m_window_width_scroll_bar) {
+    m_window_width_scroll_bar->SetThumbPosition(open_file_window_width);
+  }
+  m_updating_window = false;
+}
+
+void MyMainWindow::ApplyOrientation() {
+  m_dcm_processor.SetOrientation(open_file_rotation, open_file_flip);
 }
 
 void MyMainWindow::SetupDcmGenerator(){
@@ -1183,7 +1496,7 @@ void MyMainWindow::OnJPGToDCMConvert( wxCommandEvent& event ) {
 
   try
   {
-    auto result_dcm_file_path = tape_scanner::dicom_generator::ConvertJpegToDcm(m_in_jpeg_file_path);
+    auto result_dcm_file_path = tape_scanner::dicom_generator::ConvertJpegToDcm(m_in_jpeg_file_path.ToStdString());
     _log(wxString::Format(_("Successfuly converted. See - %s\n"), result_dcm_file_path));
   }
   catch( std::runtime_error& error)
@@ -1240,7 +1553,7 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
 
   try{
     using namespace tape_scanner::dicom_generator;
-    ConvertBinToDcm(file_path, width, height, bits, frames, all_frames_as_1st,
+    ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
                     [this](const std::string& msg){ _log(msg); });
   }
   catch(...){
@@ -1444,7 +1757,7 @@ void MyMainWindow::OnDCMCreate( wxCommandEvent& event ) {
 
 
   try {
-    tape_scanner::dicom_generator::CreateDcm(file_path, width, height, bits, frames, fill_value, fill_value_max,
+    tape_scanner::dicom_generator::CreateDcm(file_path.ToStdString(), width, height, bits, frames, fill_value, fill_value_max,
                                              fill_value_increment, increment_for_new_frames_only);
 
     _log(wxString::Format(_("Successfuly created. See - %s\n"), file_path));

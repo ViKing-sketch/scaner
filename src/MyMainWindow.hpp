@@ -96,6 +96,13 @@ protected:
 
 private:
   void SetupDcmGenerator();
+  void SetupScanGeometryControls();
+  void SetupViewerTools();
+  void ShowWindow(int center, int width);
+  void ApplyOrientation();
+  void ReloadScanBinChoice();
+  void ApplyRulerPitch(bool along_x);
+  void OnRulerPixels(bool along_x, double pixels);
   bool InitController();
   bool InitCamera();
   bool InitScanner();
@@ -149,6 +156,9 @@ private:
   wxString scan_width_default             = "100.0";
   wxString scan_height_default            = "100.0";
   wxString scan_ppm_default               = "36.571429";
+  wxString scan_bin_default               = "2";
+  wxString scan_pixel_um_x_default        = "21.0";
+  wxString scan_pixel_um_y_default        = "21.0";
   // autosave
   wxString autosave_controller_ip_address;
   wxString autosave_controller_net_mask;
@@ -163,6 +173,20 @@ private:
   wxString autosave_scan_width;
   wxString autosave_scan_height;
   wxString autosave_scan_ppm;
+  wxString autosave_scan_bin;
+  wxString autosave_pixel_um_x;
+  wxString autosave_pixel_um_y;
+  wxChoice* m_scan_bin_choice = nullptr;
+  wxTextCtrl* m_pixel_um_x_text = nullptr;
+  wxTextCtrl* m_pixel_um_y_text = nullptr;
+  wxTextCtrl* m_ruler_mm_x = nullptr;
+  wxTextCtrl* m_ruler_px_x = nullptr;
+  wxTextCtrl* m_ruler_mm_y = nullptr;
+  wxTextCtrl* m_ruler_px_y = nullptr;
+  wxToggleButton* m_pick_x_btn = nullptr;
+  wxToggleButton* m_pick_y_btn = nullptr;
+  bool m_updating_scan_mode = false;
+  bool m_updating_ruler = false;
   // opened file data
   wxString open_file_path = "";
   wxString open_file_name = "";
@@ -175,6 +199,8 @@ private:
   int open_file_window_width = 256;
   int open_file_rotation = 0;
   int open_file_flip = 0;
+  bool m_updating_window = false;
+  wxToggleButton* m_invert_btn = nullptr;
 
   // Dicom viewer
   DicomProcessor m_dcm_processor;

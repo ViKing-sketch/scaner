@@ -62,18 +62,18 @@ GLImgViewer::Tile::Tile(const cv::Mat& tileData, float x, float y, float w, floa
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
     GLint internal_format, format, type;
-    if (tileData.type() == CV_8UC1) {
-        internal_format = GL_LUMINANCE;
-        format = GL_LUMINANCE;
+    if (tileData.type() == CV_16UC1) {
+        internal_format = GL_R16;
+        format = GL_RED;
+        type = GL_UNSIGNED_SHORT;
+    } else if (tileData.type() == CV_8UC1) {
+        internal_format = GL_R8;
+        format = GL_RED;
         type = GL_UNSIGNED_BYTE;
     } else if (tileData.type() == CV_8UC3) {
         internal_format = GL_RGB;
         format = GL_RGB;
         type = GL_UNSIGNED_BYTE;
-    } else if (tileData.type() == CV_16UC1) {
-        internal_format = GL_LUMINANCE16;
-        format = GL_LUMINANCE;
-        type = GL_UNSIGNED_SHORT;
     } else {
         throw std::invalid_argument("Unsupported image format");
     }
@@ -98,6 +98,14 @@ void GLImgViewer::Tile::Render(float scale, wxPoint2DDouble offset)
     // render container
     glBindVertexArray(m_VAO);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4); // Рисуем квад    
+}
+
+void GLImgViewer::Tile::SetNearest(bool nearest)
+{
+    glBindTexture(GL_TEXTURE_2D, textureID);
+    const GLint filter = nearest ? GL_NEAREST : GL_LINEAR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 }
 
 // ImageTiler implementation
@@ -129,6 +137,12 @@ void GLImgViewer::ImageTiler::Render(float scale, const wxPoint& offset, const w
         }
     }
     glDisable(GL_TEXTURE_2D);
+}
+
+void GLImgViewer::ImageTiler::SetNearest(bool nearest) {
+    for (const auto &tile : tiles) {
+        tile->SetNearest(nearest);
+    }
 }
 
 void GLImgViewer::ImageTiler::CreateTiles(const cv::Mat& image) {
@@ -190,19 +204,89 @@ GLImgViewer::~GLImgViewer() {
     delete m_context;
 }
 
-void GLImgViewer::SetImage(const cv::Mat& img, bool need_reset){
-    UnBindEvents();
+void GLImgViewer::SetWindow(double center, double width) {
+    m_window.center = std::clamp(center, 0.0, kDisplayMaxValue);
+    m_window.width = std::clamp(width, 1.0, kDisplayMaxValue);
+    Refresh();
+}
 
-    m_tiler = std::make_unique<ImageTiler>(img);
-    m_full_img_size = {img.cols, img.rows};
-    
-    if(need_reset)
-    {
+void GLImgViewer::SetInvert(bool invert) {
+    m_invert = invert;
+    Refresh();
+}
+
+void GLImgViewer::SetOrientation(int rotation_deg, int flip) {
+    m_rotation = rotation_deg;
+    m_flip = flip;
+    if (!m_source.empty()) {
+        UploadPresented();
+    }
+    Refresh();
+}
+
+void GLImgViewer::UploadPresented() {
+    SetCurrent(*m_context);
+    cv::Mat presented = PresentFrame(m_source, m_rotation, m_flip);
+    m_mono = presented.channels() == 1;
+    m_tiler = std::make_unique<ImageTiler>(presented);
+    m_full_img_size = {presented.cols, presented.rows};
+    if (m_tiler) {
+        m_tiler->SetNearest(UseNearestFilter(m_scale));
+    }
+}
+
+void GLImgViewer::BeginRuler(bool along_x) {
+    m_ruler_armed = true;
+    m_ruler_along_x = along_x;
+    m_ruler_has_first = false;
+}
+
+void GLImgViewer::CancelRuler() {
+    m_ruler_armed = false;
+    m_ruler_has_first = false;
+}
+
+bool GLImgViewer::RecordRulerPoint(glm::vec2 screen_pos) {
+    if (m_source.empty() || m_full_img_size.x <= 0 || m_full_img_size.y <= 0) {
+        return false;
+    }
+    const glm::vec2 world = ScreenToWorld(screen_pos);
+    double presented_x = 0;
+    double presented_y = 0;
+    if (!ImagePixelFromModel(world.x, world.y, m_full_img_size.x, m_full_img_size.y, presented_x, presented_y)) {
+        return false;
+    }
+    double src_x = 0;
+    double src_y = 0;
+    if (!SourceMarkFromPresented(presented_x, presented_y, m_source.cols, m_source.rows, m_rotation, m_flip, src_x, src_y)) {
+        return false;
+    }
+    if (!m_ruler_has_first) {
+        m_ruler_x = src_x;
+        m_ruler_y = src_y;
+        m_ruler_has_first = true;
+        return true;
+    }
+    const double span = AxisPixelSpan(m_ruler_x, m_ruler_y, src_x, src_y, m_ruler_along_x);
+    m_ruler_armed = false;
+    m_ruler_has_first = false;
+    if (m_on_ruler) {
+        m_on_ruler(m_ruler_along_x, span);
+    }
+    return true;
+}
+
+void GLImgViewer::SetImage(const cv::Mat& img, bool need_reset){
+    m_ruler_has_first = false;
+    UnBindEvents();
+    m_source = img.clone();
+    if (need_reset) {
         m_offset = {0, 0};
         m_scale = 1.0f;
         m_dragging = false;
+        m_window_dragging = false;
     }
-
+    UploadPresented();
     BindEvents();
     Refresh();
 }
@@ -232,6 +316,8 @@ void GLImgViewer::BindEvents() {
     Bind(wxEVT_MOTION, &GLImgViewer::OnMouseMove, this);
     Bind(wxEVT_LEFT_DOWN, &GLImgViewer::OnMouseDown, this);
     Bind(wxEVT_LEFT_UP, &GLImgViewer::OnMouseUp, this);
+    Bind(wxEVT_RIGHT_DOWN, &GLImgViewer::OnMouseDown, this);
+    Bind(wxEVT_RIGHT_UP, &GLImgViewer::OnMouseUp, this);
 }
 
 void GLImgViewer::UnBindEvents() {
@@ -241,13 +327,15 @@ void GLImgViewer::UnBindEvents() {
     Unbind(wxEVT_MOTION, &GLImgViewer::OnMouseMove, this);
     Unbind(wxEVT_LEFT_DOWN, &GLImgViewer::OnMouseDown, this);
     Unbind(wxEVT_LEFT_UP, &GLImgViewer::OnMouseUp, this);
+    Unbind(wxEVT_RIGHT_DOWN, &GLImgViewer::OnMouseDown, this);
+    Unbind(wxEVT_RIGHT_UP, &GLImgViewer::OnMouseUp, this);
 }
 
 void GLImgViewer::OnPaint(wxPaintEvent& event) {
     wxPaintDC(this);
     SetCurrent(*m_context);
     
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClearColor(0.02f, 0.02f, 0.02f, 1.0f);
     glViewport(0, 0, GetClientSize().x, GetClientSize().y);
     glClear(GL_COLOR_BUFFER_BIT);
     
@@ -262,11 +350,15 @@ void GLImgViewer::OnPaint(wxPaintEvent& event) {
     {
         UpdateProjection();
         m_shader->use();
-        m_shader->setFloat("uWindowCenter", m_bright);
-        m_shader->setFloat("uWindowWidth", m_contrast);
+        const float max_value = m_mono && m_source.type() == CV_8UC1 ? 255.f : static_cast<float>(kDisplayMaxValue);
+        m_shader->setFloat("uWindowCenter", static_cast<float>(m_window.center) / max_value);
+        m_shader->setFloat("uWindowWidth", static_cast<float>(m_window.width) / max_value);
+        m_shader->setInt("uInvert", m_invert ? 1 : 0);
+        m_shader->setInt("uMono", m_mono ? 1 : 0);
         m_shader->setMatrix4f("uProjection", glm::value_ptr(m_projection));
         m_shader->setMatrix4f("uView", glm::value_ptr(m_view));
         m_shader->setMatrix4f("uModel", glm::value_ptr(glm::mat4(1.0f)));
+        m_tiler->SetNearest(UseNearestFilter(m_scale));
         m_tiler->Render(m_scale, wxPoint(), GetClientSize());
     }
     SwapBuffers();
@@ -287,18 +379,39 @@ void GLImgViewer::OnMouseWheel(wxMouseEvent& event) {
 
 void GLImgViewer::OnMouseDown(wxMouseEvent& event) {
     m_lastMousePos = glm::vec2(event.GetPosition().x, event.GetPosition().y);
-    m_dragging = true;
-    CaptureMouse();
+    if (event.LeftDown() && m_ruler_armed && RecordRulerPoint(m_lastMousePos)) {
+        return;
+    }
+    if (event.RightDown()) {
+        m_window_dragging = true;
+    } else {
+        m_dragging = true;
+    }
+    if (!HasCapture()) {
+        CaptureMouse();
+    }
 }
 
 void GLImgViewer::OnMouseUp(wxMouseEvent& event) {
     m_dragging = false;
+    m_window_dragging = false;
     if(HasCapture()) ReleaseMouse();
 }
 
 void GLImgViewer::OnMouseMove(wxMouseEvent& event) {
-    if(m_dragging && event.Dragging()) {
-        glm::vec2 currentMousePos(event.GetPosition().x, event.GetPosition().y);
+    glm::vec2 currentMousePos(event.GetPosition().x, event.GetPosition().y);
+    if (m_window_dragging && event.RightIsDown()) {
+        const double dx = currentMousePos.x - m_lastMousePos.x;
+        const double dy = currentMousePos.y - m_lastMousePos.y;
+        DragWindow(m_window, dx, dy, GetClientSize().GetWidth(), GetClientSize().GetHeight());
+        m_lastMousePos = currentMousePos;
+        if (m_on_window) {
+            m_on_window(static_cast<int>(std::lround(m_window.center)), static_cast<int>(std::lround(m_window.width)));
+        }
+        Refresh();
+        return;
+    }
+    if(m_dragging && event.Dragging() && event.LeftIsDown()) {
         glm::vec2 delta = ScreenToWorld(currentMousePos) - ScreenToWorld(m_lastMousePos);
         
         m_offset += delta;

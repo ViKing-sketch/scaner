@@ -1,12 +1,17 @@
 #include <tape_scanner/scanner/Utils.hpp>
+#include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <cstdio>
 #include <sstream>
-#include <wx/log.h>
+#include <stdexcept>
+#include <string>
+#include <tape_scanner/scanner/ScanLog.hpp>
 
 #include <dcmtk/config/osconfig.h>
 #include <dcmtk/dcmdata/dctk.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
+#include <dcmtk/dcmdata/dcuid.h>
 
 cv::Point2d calcShiftBetweenCadres(const cv::Mat &left, const cv::Mat &right) {
   if (left.size() != right.size()) {
@@ -29,7 +34,7 @@ int safeStrToInt(const std::string &str_num) {
     std::stringstream stream(str_num);
     stream >> res;
   } catch (std::runtime_error &e) {
-    wxLogError(wxString::Format("Convert error: %s", str_num));
+    ScanLogError("Convert error: " + str_num);
   }
 
   return res;
@@ -43,7 +48,7 @@ double safeStrToDouble(const std::string &str_double)
     std::stringstream stream(str_double);
     stream >> res;
   } catch (std::runtime_error &e) {
-    wxLogError(wxString::Format("Convert error: %s", str_double));
+    ScanLogError("Convert error: " + str_double);
   }
 
   return res;
@@ -109,15 +114,15 @@ cv::Mat readMatFromFile(std::string key, std::string file_name) {
   cv::FileStorage fs(file_name, cv::FileStorage::READ);
   if(!fs.isOpened())
   {
-    wxLogError("Open %s for read failed", file_name);
+    ScanLogError("Open " + file_name + " for read failed");
     return img;
   }
   if(!fs[key].empty()){
     fs[key] >> img;
-    wxLogMessage("Read img %s done", key);
+    ScanLogMessage("Read img " + key + " done");
   }
   else {
-    wxLogMessage("Key %s do not exist in %", key, file_name);
+    ScanLogMessage("Key " + key + " do not exist in " + file_name);
   }
   fs.release();
 
@@ -125,75 +130,166 @@ cv::Mat readMatFromFile(std::string key, std::string file_name) {
 };
 
 void writeMatTo(const cv::Mat& img, const std::string& key, const std::string& file_name) {
-  wxLogMessage("Start write img %s to %s", key, file_name);
+  ScanLogMessage("Start write img " + key + " to " + file_name);
 
   cv::FileStorage fs(file_name, cv::FileStorage::WRITE);
   fs << key << img;
   fs.release();
 
-  wxLogMessage("Write img %s to %s done", key, file_name);
+  ScanLogMessage("Write img " + key + " to " + file_name + " done");
 }
 
-bool saveToDcm(const cv::Mat& image, const std::string& filename) {
-  // 1. Проверка валидности изображения
+namespace {
+
+std::string MakeUid(const char *root) {
+  char buf[100];
+  return std::string(dcmGenerateUniqueIdentifier(buf, root));
+}
+
+/// DICOM Decimal String: без хвостовых нулей, не длиннее 16 символов.
+std::string FormatDicomDecimal(double value) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.6f", value);
+  std::string text(buf);
+  const auto dot = text.find('.');
+  if (dot != std::string::npos) {
+    while (!text.empty() && text.back() == '0') {
+      text.pop_back();
+    }
+    if (!text.empty() && text.back() == '.') {
+      text.pop_back();
+    }
+  }
+  if (text.empty()) {
+    return "0";
+  }
+  return text;
+}
+
+/**
+ * Среднее 2×2.
+ * sum считается в uint32_t: 4 * 65535 = 262140, это не влезает в uint16
+ * и не должно обрезаться до 8 бит. Деление (sum + 2) / 4 — округление
+ * до ближайшего, половина вверх.
+ */
+cv::Mat BinAverage2x2(const cv::Mat &src) {
+  const int out_rows = src.rows / 2;
+  const int out_cols = src.cols / 2;
+  cv::Mat dst(out_rows, out_cols, CV_16UC1);
+  for (int y = 0; y < out_rows; ++y) {
+    const uint16_t *row0 = src.ptr<uint16_t>(2 * y);
+    const uint16_t *row1 = src.ptr<uint16_t>(2 * y + 1);
+    uint16_t *out = dst.ptr<uint16_t>(y);
+    for (int x = 0; x < out_cols; ++x) {
+      const uint32_t sum = static_cast<uint32_t>(row0[2 * x]) + row0[2 * x + 1] +
+                           row1[2 * x] + row1[2 * x + 1];
+      out[x] = static_cast<uint16_t>((sum + 2u) / 4u);
+    }
+  }
+  return dst;
+}
+
+} // namespace
+
+cv::Mat ApplyScanBinning(const cv::Mat &src, int bin) {
+  if (src.empty()) {
+    return {};
+  }
+  if (src.type() != CV_16UC1) {
+    throw std::invalid_argument("ApplyScanBinning: expected CV_16UC1");
+  }
+  if (bin == 1) {
+    return src;
+  }
+  if (bin != 2) {
+    throw std::invalid_argument("ApplyScanBinning: bin must be 1 or 2");
+  }
+  return BinAverage2x2(src);
+}
+
+bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWriteParams &params) {
   if (image.empty()) {
     std::cerr << "Ошибка: пустое изображение" << std::endl;
     return false;
   }
-
-         // 2. Создание формата DICOM-файла и получение dataset
-  DcmFileFormat fileFormat;
-  DcmDataset *dataset = fileFormat.getDataset();
-
-         // 3. Заполнение обязательных DICOM-тегов
-         //    Примерные метаданные — в реальном проекте их нужно заполнять корректно
-  dataset->putAndInsertString(DCM_PatientName, "Anonymous");
-  dataset->putAndInsertString(DCM_PatientID, "123456");
-
-
-         // 4. Задание размеров изображения
-  int rows = image.rows;
-  int cols = image.cols;
-  dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
-  dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
-
-         // 5. Настройки пиксельных данных в зависимости от типа изображения
-  int channels = image.channels();
-  int depth = image.depth();
-
-         // Поддержка 16-битных изображений
-  if (depth != CV_16U || channels != 1) {
-    std::cerr << "Ошибка: поддерживаются только 16-битные одноканальные изображения" << std::endl;
+  if (filename.empty()) {
+    std::cerr << "Ошибка: пустой путь DICOM" << std::endl;
     return false;
   }
 
-         // Установка PhotometricInterpretation
+  const int rows = image.rows;
+  const int cols = image.cols;
+  if (image.type() != CV_16UC1) {
+    std::cerr << "Ошибка: поддерживаются только 16-битные одноканальные изображения" << std::endl;
+    return false;
+  }
+  if (rows > kMaxDicomDimension || cols > kMaxDicomDimension || rows > 65535 || cols > 65535) {
+    std::cerr << "Ошибка: Rows/Columns больше предела одного DICOM-кадра" << std::endl;
+    return false;
+  }
+  if (!(params.pixel_spacing_row_mm > 0.0) || !(params.pixel_spacing_col_mm > 0.0)) {
+    std::cerr << "Ошибка: Pixel Spacing должен быть положительным" << std::endl;
+    return false;
+  }
+  if (params.instance_number < 1) {
+    std::cerr << "Ошибка: Instance Number начинается с 1" << std::endl;
+    return false;
+  }
+
+  cv::Mat continuous_holder;
+  const cv::Mat *pixels = &image;
+  if (!image.isContinuous()) {
+    continuous_holder = image.clone();
+    pixels = &continuous_holder;
+  }
+
+  const std::string study_uid =
+      params.study_instance_uid.empty() ? MakeUid(SITE_STUDY_UID_ROOT) : params.study_instance_uid;
+  const std::string series_uid =
+      params.series_instance_uid.empty() ? MakeUid(SITE_SERIES_UID_ROOT) : params.series_instance_uid;
+  const std::string sop_uid =
+      params.sop_instance_uid.empty() ? MakeUid(SITE_INSTANCE_UID_ROOT) : params.sop_instance_uid;
+  const std::string spacing =
+      FormatDicomDecimal(params.pixel_spacing_row_mm) + "\\" + FormatDicomDecimal(params.pixel_spacing_col_mm);
+  const std::string image_position = std::string("0\\") + FormatDicomDecimal(params.image_position_row_mm) + "\\0";
+  const std::string instance_number = std::to_string(params.instance_number);
+
+  DcmFileFormat fileFormat;
+  DcmDataset *dataset = fileFormat.getDataset();
+  DcmMetaInfo *meta = fileFormat.getMetaInfo();
+
+  meta->putAndInsertString(DCM_MediaStorageSOPClassUID, UID_SecondaryCaptureImageStorage);
+  meta->putAndInsertString(DCM_MediaStorageSOPInstanceUID, sop_uid.c_str());
+  meta->putAndInsertString(DCM_TransferSyntaxUID, UID_LittleEndianExplicitTransferSyntax);
+
+  dataset->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
+  dataset->putAndInsertString(DCM_SOPInstanceUID, sop_uid.c_str());
+  dataset->putAndInsertString(DCM_StudyInstanceUID, study_uid.c_str());
+  dataset->putAndInsertString(DCM_SeriesInstanceUID, series_uid.c_str());
+  dataset->putAndInsertString(DCM_InstanceNumber, instance_number.c_str());
+  dataset->putAndInsertString(DCM_Modality, "OT");
+  dataset->putAndInsertString(DCM_ConversionType, "DF");
+  dataset->putAndInsertString(DCM_PatientName, "Anonymous");
+  dataset->putAndInsertString(DCM_PatientID, "123456");
   dataset->putAndInsertString(DCM_PhotometricInterpretation, "MONOCHROME2");
   dataset->putAndInsertUint16(DCM_SamplesPerPixel, 1);
-
-         // Базовые настройки битов
   dataset->putAndInsertUint16(DCM_BitsAllocated, 16);
   dataset->putAndInsertUint16(DCM_BitsStored, 16);
   dataset->putAndInsertUint16(DCM_HighBit, 15);
-  dataset->putAndInsertUint16(DCM_PixelRepresentation, 0); // 0 = unsigned
+  dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
+  dataset->putAndInsertString(DCM_PixelSpacing, spacing.c_str());
+  dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
+  dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
+  dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
 
-         // 6. Подготовка данных пикселей
-  size_t pixelCount = rows * cols * channels;
-  Uint16 *pixelData = new Uint16[pixelCount];
-
-         // Для одноканальных изображений просто копируем
-  memcpy(pixelData, image.data, pixelCount * sizeof(pixelData[0]));
-
-         // 7. Вставка пиксельных данных в dataset
-  OFCondition status = dataset->putAndInsertUint16Array(DCM_PixelData, pixelData, pixelCount);
-  delete[] pixelData;
-
+  const size_t pixel_count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
+  OFCondition status = dataset->putAndInsertUint16Array(
+      DCM_PixelData, reinterpret_cast<const Uint16 *>(pixels->data), static_cast<unsigned long>(pixel_count));
   if (status.bad()) {
     std::cerr << "Ошибка вставки пиксельных данных: " << status.text() << std::endl;
     return false;
   }
 
-         // 8. Сохранение файла (формат Little Endian Explicit)
   status = fileFormat.saveFile(filename.c_str(), EXS_LittleEndianExplicit);
   if (status.bad()) {
     std::cerr << "Ошибка сохранения DICOM-файла: " << status.text() << std::endl;

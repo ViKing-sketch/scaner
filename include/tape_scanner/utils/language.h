@@ -191,7 +191,7 @@ private:
         wxT("English"),
         wxT("Russian")
     };
-    static const int lng_str_cnt = 29 + 59 + 101 + 8;
+    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14;
     wxString lng_str[lng_cnt][lng_str_cnt] = {
         {
             //
@@ -394,6 +394,20 @@ private:
             wxT("Horizontally"),
             wxT("Vertically"),
             wxT("%s (frames: %i, size: %ix%i)"),
+            wxT("Resolution:"),
+            wxT("600 dpi (42 um)"),
+            wxT("1200 dpi (21 um)"),
+            wxT("Pixel pitch X, um:"),
+            wxT("Pixel pitch Y, um:"),
+            wxT("Invert"),
+            wxT("Ruler X, mm:"),
+            wxT("px:"),
+            wxT("Apply X"),
+            wxT("Ruler Y, mm:"),
+            wxT("Apply Y"),
+            wxT("Pick X"),
+            wxT("Pick Y"),
+            wxT("Pixels are counted on the saved grid; optical pitch divides by bin."),
         },
         {
             //
@@ -596,6 +610,20 @@ private:
             wxT("Горизонтально"),
             wxT("Вертикально"),
             wxT("%s (кадров: %i, размер: %ix%i)"),
+            wxT("Разрешение:"),
+            wxT("600 dpi (42 мкм)"),
+            wxT("1200 dpi (21 мкм)"),
+            wxT("Шаг пикселя X, мкм:"),
+            wxT("Шаг пикселя Y, мкм:"),
+            wxT("Инверсия"),
+            wxT("Линейка X, мм:"),
+            wxT("пикс.:"),
+            wxT("Записать X"),
+            wxT("Линейка Y, мм:"),
+            wxT("Записать Y"),
+            wxT("Указать X"),
+            wxT("Указать Y"),
+            wxT("Пиксели считаются по сохранённой сетке; оптический шаг делится на bin."),
     },
     };
 };

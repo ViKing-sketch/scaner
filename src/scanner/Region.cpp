@@ -52,6 +52,12 @@ Region::Region(int x, int y, const cv::Mat &img)
     m_pasted_region = {0, 0, img.cols, img.rows};
 }
 
+Region Region::Clone() const {
+    Region copy(*this);
+    copy.m_canvas = m_canvas.clone();
+    return copy;
+}
+
 void Region::InsertRegion(const Region &region) {
     if (auto [insertable, reason] = IsInsertable(region); !insertable) {
         throw std::logic_error(reason);

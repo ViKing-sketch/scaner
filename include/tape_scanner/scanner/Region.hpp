@@ -17,6 +17,9 @@ public:
 
     void InsertRegion(const Region &region);
 
+    /// Глубокая копия холста: последующая вставка не меняет исходный Region.
+    Region Clone() const;
+
     cv::Mat &GetMat() const;
 
     cv::Rect GetRect() const;

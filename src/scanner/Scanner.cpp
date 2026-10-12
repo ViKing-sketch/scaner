@@ -1,4 +1,5 @@
 #include <tape_scanner/scanner/Scanner.hpp>
+#include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 #include <chrono>
 #include <sstream>
@@ -32,7 +33,7 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
     StopScan();
 
     m_dst_scan_file_path = dst_scan_file_path;
-    m_film.Reset();
+    m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry);
     m_running = true;
     m_foce_canceled_unsafe = false;
     m_cur_dir = -1;
@@ -151,6 +152,9 @@ void Scanner::WorkerLoop() {
 
   m_controller.GoCameraToHome(true);
   if (!WaitFilm()) {
+    if (m_session) {
+      m_session->Finish();
+    }
     return;
   }
 
@@ -171,8 +175,12 @@ void Scanner::WorkerLoop() {
   if(m_light_only_when_capture)
     m_controller.LightEnable(false);
 
-  if (m_film.SaveToDcm(m_dst_scan_file_path)) {
-    wxLogMessage("Dcm file saved");
+  if (!m_session || !m_session->Finish()) {
+    wxLogError("DICOM segment was not saved");
+  } else if (m_session->SavedSegmentCount() == 0) {
+    wxLogMessage("Scan finished with no pixels to save");
+  } else {
+    wxLogMessage(wxString::Format("DICOM segments saved: %i", m_session->SavedSegmentCount()));
   }
 
   m_cur_roller_pos += 40000;
@@ -295,11 +303,32 @@ void Scanner::CaptureCadr(bool need_save) {
   }
 
   if (!m_calibrate_running) {
-    auto &b = m_coefs.border;
-    cv::Rect after_croped = {b.x, b.y, cadr.cols - b.x - b.width, cadr.rows - b.y - b.height};
-    auto cur_pixel_coord = GetCurPixelCoords();
-
-    m_film.PushRegion(cadr(after_croped), cur_pixel_coord.x, cur_pixel_coord.y);
+    if (cadr.empty() || cadr.type() != CV_16UC1) {
+      wxLogError("CaptureCadr: empty or unexpected frame");
+    } else {
+      auto &b = m_coefs.border;
+      cv::Rect after_croped = {b.x, b.y, cadr.cols - b.x - b.width, cadr.rows - b.y - b.height};
+      const bool crop_inside = after_croped.width > 0 && after_croped.height > 0 &&
+                               after_croped.x + after_croped.width <= cadr.cols &&
+                               after_croped.y + after_croped.height <= cadr.rows;
+      if (!crop_inside) {
+        wxLogError("CaptureCadr: crop is outside the frame");
+      } else if (!m_session) {
+        wxLogError("CaptureCadr: scan session is not started");
+      } else {
+        try {
+          // Биннинг после кропа и до сшивки. Шаги моторов не меняются:
+          // поле кадра то же, мельче только сохранённая сетка.
+          cv::Mat binned = ApplyScanBinning(cadr(after_croped), m_geometry.bin);
+          const cv::Point cur_pixel_coord = GetCurPixelCoords();
+          if (binned.empty() || !m_session->PushRegion(binned, cur_pixel_coord.x, cur_pixel_coord.y)) {
+            wxLogError("CaptureCadr: failed to bin or push the tile");
+          }
+        } catch (const std::exception &e) {
+          wxLogError(wxString::Format("CaptureCadr: %s", wxString(e.what())));
+        }
+      }
+    }
   } else {
     if(m_light_only_when_capture)
       m_controller.LightEnable(true);
@@ -317,7 +346,8 @@ cv::Point Scanner::GetCurPixelCoords() {
     int x = (m_coefs.camera_max_pos / m_coefs.x_steps_in_pixsel -
              m_cur_camera_pos / m_coefs.x_steps_in_pixsel);
     int y = (m_cur_roller_pos) / m_coefs.y_steps_in_pixsel;
-    return {x, y};
+    const int bin = m_geometry.bin >= 1 ? m_geometry.bin : 1;
+    return {x / bin, y / bin};
 }
 
 void Scanner::InitCameraCalibrate() {

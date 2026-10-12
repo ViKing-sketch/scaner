@@ -1,0 +1,17 @@
+out/**/*.dcm
+out/**/*.bmp
+out/**/*.raw
+out/**/*.o
+out/**/*.7z
+out/**/*.bin
+out/**/*.jpg
+out/**/*.img
+out/**/*.upx
+out/**/*.exe
+*.o
+out/*log*.txt
+*.user
+build/
+build_release/
+.vscode/
+.cache

@@ -13,8 +13,18 @@ public:
 
     cv::Mat GetMat();
 
-    bool SaveToDcm(const std::string& dst_file_path){
-      return saveToDcm(GetMat(), dst_file_path);
+    /// Копия холста вместе с незаконченной полосой, в том числе короче полной ширины.
+    /// Исходный Film не меняется: повторный вызов не вклеивает полосу второй раз.
+    cv::Mat Render() const;
+
+    bool HasOpenStripe() const;
+    bool HasContent() const;
+    int CurrentStripeY() const;
+    /// Нижняя строка холста в координатах сегмента. Совпадает с числом строк Render(), если холст начинается с 0.
+    int ContentRows() const;
+
+    bool SaveToDcm(const std::string& dst_file_path, const DicomWriteParams& params = {}){
+      return saveToDcm(Render(), dst_file_path, params);
     }
 
     void Reset();
