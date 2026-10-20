@@ -22,12 +22,23 @@ bool Controller::TryConnect() {
     if (res) {
         m_status = Status::connected;
         InitControllerAfterConnect();
+    } else {
+        m_socket.Close();
+        m_status = Status::disconnected;
     }
     return res;
 }
 
 bool Controller::IsConnected() {
     return m_status == Status::connected;
+}
+
+bool Controller::Probe() {
+    m_status = Status::try_connect;
+    const bool answered = OpenConnection();
+    m_socket.Close();
+    m_status = Status::disconnected;
+    return answered;
 }
 
 void Controller::SendAnyCommand(const std::string& any_command) {

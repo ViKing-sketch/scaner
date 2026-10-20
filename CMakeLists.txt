@@ -44,6 +44,13 @@ if(MSVC)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
 
+add_executable(test_network_setup tests/test_network_setup.cpp src/scanner/NetworkSetup.cpp)
+target_include_directories(test_network_setup PRIVATE "include/")
+if(MSVC)
+    target_compile_options(test_network_setup PRIVATE /utf-8)
+endif()
+add_test(NAME test_network_setup COMMAND test_network_setup)
+
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
 find_package(glm CONFIG QUIET)

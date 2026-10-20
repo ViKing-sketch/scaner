@@ -32,6 +32,7 @@
 #include <tape_scanner/dicom_generator/JpegToDcmConverter.hpp>
 
 #include <tape_scanner/scanner/Utils.hpp>
+#include <tape_scanner/scanner/NetworkSetup.hpp>
 
 #include <Windows.h>
 #include <algorithm>
@@ -76,6 +77,8 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   crc32_init();
   // language converter setup
   lng = new Language();
+  wxMenuItem* network_item = m_menu1->Insert(4, wxID_ANY, _("Network.."));
+  Bind(wxEVT_MENU, &MyMainWindow::OnNetworkSettings, this, network_item->GetId());
   // setup status
   SetStatusText(_("Welcome"), 2);
   // settings get/set/create
@@ -447,6 +450,96 @@ void MyMainWindow::OnCameraTimer( wxTimerEvent& event ) {
 
 void MyMainWindow::OnExit(wxCommandEvent& event) {
   Close(true);
+}
+
+void MyMainWindow::ApplyNetworkSettings(const NetworkSettingsDialog::Values& values) {
+  m_controller_ip_address_text->ChangeValue(values.controller_ip);
+  m_controller_net_mask_text->ChangeValue(values.controller_mask);
+  m_controller_gateway_text->ChangeValue(values.controller_gateway);
+  m_controller_udp_port_text->ChangeValue(values.controller_port);
+  m_camera_ip_address_text->ChangeValue(values.camera_ip);
+  m_camera_net_mask_text->ChangeValue(values.camera_mask);
+  m_camera_gateway_text->ChangeValue(values.camera_gateway);
+  m_camera_dhcp_checkbox->SetValue(values.camera_dhcp);
+
+  autosave_controller_ip_address = values.controller_ip;
+  autosave_controller_net_mask = values.controller_mask;
+  autosave_controller_gateway = values.controller_gateway;
+  autosave_controller_udp_port = values.controller_port;
+  autosave_camera_ip_address = values.camera_ip;
+  autosave_camera_net_mask = values.camera_mask;
+  autosave_camera_gateway = values.camera_gateway;
+  autosave_camera_dhcp = values.camera_dhcp;
+
+  settings["controller"]["ip_address"] = WxToUtf8(values.controller_ip);
+  settings["controller"]["net_mask"] = WxToUtf8(values.controller_mask);
+  settings["controller"]["gateway"] = WxToUtf8(values.controller_gateway);
+  settings["controller"]["udp_port"] = WxToUtf8(values.controller_port);
+  settings["camera"]["ip_address"] = WxToUtf8(values.camera_ip);
+  settings["camera"]["net_mask"] = WxToUtf8(values.camera_mask);
+  settings["camera"]["gateway"] = WxToUtf8(values.camera_gateway);
+  settings["camera"]["dhcp"] = values.camera_dhcp ? "1" : "0";
+  _settings_file_update(true);
+
+  int port = 0;
+  tape_scanner::ParsePort(WxToUtf8(values.controller_port), port);
+  const wxString endpoint = values.controller_ip + wxString::Format(":%d", port);
+  if (m_controller && m_controller->IsConnected() && m_controller_endpoint != endpoint) {
+    wxMessageBox(wxString::FromUTF8(tape_scanner::ControllerAddressPendingMessage(UiRussian())),
+                 _("Network settings"), wxOK | wxICON_INFORMATION);
+    return;
+  }
+  if (!m_controller || !m_controller->IsConnected()) {
+    m_controller.reset();
+    m_controller_endpoint.clear();
+  }
+}
+
+void MyMainWindow::OnNetworkSettings(wxCommandEvent&) {
+  NetworkSettingsDialog::Values current;
+  current.controller_ip = m_controller_ip_address_text->GetValue();
+  current.controller_mask = m_controller_net_mask_text->GetValue();
+  current.controller_gateway = m_controller_gateway_text->GetValue();
+  current.controller_port = m_controller_udp_port_text->GetValue();
+  current.camera_ip = m_camera_ip_address_text->GetValue();
+  current.camera_mask = m_camera_net_mask_text->GetValue();
+  current.camera_gateway = m_camera_gateway_text->GetValue();
+  current.camera_dhcp = m_camera_dhcp_checkbox->GetValue();
+
+  NetworkSettingsDialog dialog(this, UiRussian(),
+                               [this](const wxString& text) { return lng ? lng->translate(text) : text; }, current);
+  dialog.SetCameraSearch([this](const std::string& hint) {
+    if (!m_camera)
+      m_camera = std::make_shared<Camera>();
+    return m_camera->Search(hint);
+  });
+  dialog.SetControllerProbe([this](const std::string& ip, int port) {
+    const wxString endpoint = wxString::FromUTF8(ip.c_str()) + wxString::Format(":%d", port);
+    if (m_controller && m_controller->IsConnected() && m_controller_endpoint == endpoint)
+      return true;
+    Controller probe(wxString::FromUTF8(ip.c_str()), port);
+    return probe.Probe();
+  });
+
+  struct TimerPause {
+    wxTimer &timer;
+    bool resume = false;
+    int interval = 0;
+    TimerPause(wxTimer &owned, int ms) : timer(owned), resume(owned.IsRunning()), interval(ms) {
+      if (resume)
+        timer.Stop();
+    }
+    ~TimerPause() {
+      if (resume)
+        timer.Start(interval);
+    }
+  };
+  TimerPause pause_controller(m_controller_timer, 2000);
+  TimerPause pause_camera(m_camera_timer, 1000);
+  const int result = dialog.ShowModal();
+
+  if (result == wxID_OK)
+    ApplyNetworkSettings(dialog.GetValues());
 }
 
 void MyMainWindow::OnAbout(wxCommandEvent& event) {
@@ -1425,24 +1518,63 @@ void MyMainWindow::SetupDcmGenerator(){
   }
 }
 
+bool MyMainWindow::UiRussian() const {
+  return lng && lng->get() == wxT("Russian");
+}
+
+std::string MyMainWindow::WxToUtf8(const wxString& value) {
+  wxString copy = value;
+  copy.Trim().Trim(false);
+  const auto buf = copy.ToUTF8();
+  if (!buf)
+    return {};
+  return std::string(buf.data(), buf.length());
+}
+
 bool MyMainWindow::InitController()
 {
-  SetStatusText(_("Connecting controller..."), 0);
+  const std::string ip = WxToUtf8(m_controller_ip_address_text->GetValue());
+  const std::string port_text = WxToUtf8(m_controller_udp_port_text->GetValue());
+  const bool russian = UiRussian();
 
-  if(!m_controller){
-    m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
-                                                safeStrToInt(m_controller_udp_port_text->GetValue()));
+  tape_scanner::Ipv4 parsed_ip;
+  int port = 0;
+  if (!tape_scanner::ParseIpv4(ip, parsed_ip)) {
+    m_controller_status_detail = wxString::FromUTF8(tape_scanner::InvalidIpMessage(russian));
+    SetStatusText(m_controller_status_detail, 0);
+    return false;
+  }
+  if (!tape_scanner::ParsePort(port_text, port)) {
+    m_controller_status_detail = wxString::FromUTF8(tape_scanner::InvalidPortMessage(russian));
+    SetStatusText(m_controller_status_detail, 0);
+    return false;
+  }
+
+  const wxString endpoint = wxString::FromUTF8(ip) + wxString::Format(":%d", port);
+  if (m_controller && m_controller->IsConnected() && m_controller_endpoint != endpoint) {
+    SetStatusText(_("Controller connected"), 0);
+    m_controller_status_detail.clear();
+    return true;
+  }
+
+  if (!m_controller || m_controller_endpoint != endpoint) {
+    m_controller = std::make_shared<Controller>(wxString::FromUTF8(ip), port);
+    m_controller_endpoint = endpoint;
   }
 
   if (!m_controller->IsConnected()) {
+    SetStatusText(_("Connecting controller..."), 0);
     m_controller->TryConnect();
   }
 
   if (m_controller->IsConnected()) {
     SetStatusText(_("Controller connected"), 0);
+    m_controller_status_detail.clear();
     return true;
   }
 
+  m_controller_status_detail = wxString::FromUTF8(tape_scanner::ControllerSilentMessage(ip, port, russian));
+  SetStatusText(m_controller_status_detail, 0);
   return false;
 }
 
@@ -1480,7 +1612,12 @@ bool MyMainWindow::InitScanner()
   }
 
   if (!InitController()) {
-    wxMessageBox( _("Controller is not initialized!"), _("Error"), wxICON_ERROR);
+    wxString detail = m_controller_status_detail;
+    if (detail.empty())
+      detail = wxString::FromUTF8(tape_scanner::ControllerSilentMessage(
+          WxToUtf8(m_controller_ip_address_text->GetValue()),
+          safeStrToInt(m_controller_udp_port_text->GetValue()), UiRussian()));
+    wxMessageBox(detail, _("Error"), wxOK | wxICON_ERROR);
     return false;
   }
 

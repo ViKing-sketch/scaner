@@ -10,6 +10,7 @@
 #include <tape_scanner/dicom_viewer/DicomProcessor.h>
 #include <tape_scanner/scanner/Controller.hpp>
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/NetworkSettingsDialog.hpp>
 #include <tape_scanner/scanner/Scanner.hpp>
 #include <memory.h>
 
@@ -93,6 +94,7 @@ protected:
   void OnJPGToDCMConvert( wxCommandEvent& event ) override;
   void OnBINToDCMConvert( wxCommandEvent& event ) override;
   void OnDCMCreate( wxCommandEvent& event ) override;
+  void OnNetworkSettings(wxCommandEvent& event);
 
 private:
   void SetupDcmGenerator();
@@ -105,6 +107,9 @@ private:
   void OnRulerPixels(bool along_x, double pixels);
   bool InitController();
   bool InitCamera();
+  bool UiRussian() const;
+  static std::string WxToUtf8(const wxString& value);
+  void ApplyNetworkSettings(const NetworkSettingsDialog::Values& values);
   bool InitScanner();
   wxString get_time_str();
   void _settings_file_update(bool set_status = false);
@@ -208,6 +213,8 @@ private:
   // Scanning
   std::shared_ptr<Controller> m_controller;
   std::shared_ptr<Camera> m_camera;
+  wxString m_controller_endpoint;
+  wxString m_controller_status_detail;
   std::unique_ptr<Scanner> m_scanner;
 
 };

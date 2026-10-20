@@ -1,5 +1,6 @@
 #include "tape_scanner/scanner/Utils.hpp"
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/NetworkSetup.hpp>
 #include <opencv2/photo.hpp>
 
 namespace {
@@ -10,6 +11,60 @@ const std::string RESPONSES_FILE_NAME = "responses.xml";
 void TryOrLogicError(CameraSdkStatus status, const std::string& error_msg) {
     if (status != CAMERA_STATUS_SUCCESS)
         throw std::runtime_error(error_msg);
+}
+
+std::string SdkField(const char* text, size_t size) {
+    size_t length = 0;
+    while (length < size && text[length] != '\0')
+        ++length;
+    return std::string(text, length);
+}
+
+bool SameCamera(const tape_scanner::FoundCamera& left, const tape_scanner::FoundCamera& right) {
+    if (!left.serial.empty() && left.serial == right.serial)
+        return true;
+    return !left.name.empty() && left.name == right.name && left.port == right.port && left.ip == right.ip;
+}
+
+tape_scanner::FoundCamera DescribeCamera(tSdkCameraDevInfo& info) {
+    tape_scanner::FoundCamera camera;
+    camera.name = SdkField(info.acFriendlyName, sizeof info.acFriendlyName);
+    if (camera.name.empty())
+        camera.name = SdkField(info.acProductName, sizeof info.acProductName);
+    camera.serial = SdkField(info.acSn, sizeof info.acSn);
+    camera.port = SdkField(info.acPortType, sizeof info.acPortType);
+
+    char ip[32] = {};
+    char mask[32] = {};
+    char gateway[32] = {};
+    char adapter_ip[32] = {};
+    char adapter_mask[32] = {};
+    char adapter_gateway[32] = {};
+    if (CameraGigeGetIp(&info, ip, mask, gateway, adapter_ip, adapter_mask, adapter_gateway) == CAMERA_STATUS_SUCCESS) {
+        camera.ip = ip;
+        camera.mask = mask;
+        camera.gateway = gateway;
+    }
+    return camera;
+}
+
+void CollectCameras(tSdkCameraDevInfo* list, int count, tape_scanner::CameraSearchResult& result) {
+    if (count < 0)
+        count = 0;
+    if (count > 16)
+        count = 16;
+    for (int i = 0; i < count; ++i) {
+        tape_scanner::FoundCamera camera = DescribeCamera(list[i]);
+        bool duplicate = false;
+        for (const tape_scanner::FoundCamera& have : result.cameras) {
+            if (SameCamera(have, camera)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate)
+            result.cameras.push_back(std::move(camera));
+    }
 }
 
 } // namespace
@@ -46,6 +101,39 @@ bool Camera::TryConnect() {
 
 bool Camera::IsConnected() {
     return this->m_h_camera > -1;
+}
+
+tape_scanner::CameraSearchResult Camera::Search(const std::string& hint_ip) {
+    tape_scanner::CameraSearchResult result;
+    try {
+        if (CameraSdkInit(0) != CAMERA_STATUS_SUCCESS) {
+            result.sdk_error = "CameraSdkInit failed";
+            return result;
+        }
+        result.sdk_ok = true;
+
+        constexpr int max_devs = 16;
+        tSdkCameraDevInfo listed[max_devs];
+        int listed_count = max_devs;
+        if (CameraEnumerateDevice(listed, &listed_count) == CAMERA_STATUS_SUCCESS)
+            CollectCameras(listed, listed_count, result);
+
+        tape_scanner::Ipv4 parsed_hint;
+        if (tape_scanner::ParseIpv4(hint_ip, parsed_hint)) {
+            const std::string hint = std::to_string(parsed_hint.a) + "." + std::to_string(parsed_hint.b) + "." +
+                                     std::to_string(parsed_hint.c) + "." + std::to_string(parsed_hint.d);
+            const char* ips[] = {hint.c_str()};
+            tSdkCameraDevInfo directed[max_devs];
+            int directed_count = max_devs;
+            if (CameraGigeEnumerateDevice(ips, 1, directed, &directed_count) == CAMERA_STATUS_SUCCESS)
+                CollectCameras(directed, directed_count, result);
+        }
+    } catch (const std::exception& error) {
+        result.sdk_ok = false;
+        result.sdk_error = error.what();
+        result.cameras.clear();
+    }
+    return result;
 }
 
 void Camera::EnableAutoExpose(bool enable) {

@@ -6,6 +6,7 @@
 #include <wx/msw/bitmap.h>
 
 #include <camera_api/CameraApi.h>
+#include <tape_scanner/scanner/NetworkSetup.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,7 @@ public:
 
     bool TryConnect();
     bool IsConnected();
+    tape_scanner::CameraSearchResult Search(const std::string &hint_ip);
 
     void EnableAutoExpose(bool enable = true);
     void SetExpose(int microseconds = 500);
