@@ -37,7 +37,7 @@ endif()
 
 enable_testing()
 
-add_executable(test_scan_geometry tests/test_scan_geometry.cpp)
+add_executable(test_scan_geometry tests/test_scan_geometry.cpp src/dicom_generator/BinToDcmConverter.cpp)
 target_link_libraries(test_scan_geometry PRIVATE tape_scanner_scan)
 if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)

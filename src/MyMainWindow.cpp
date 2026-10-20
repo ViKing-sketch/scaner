@@ -1551,139 +1551,23 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
   bool all_frames_as_1st = m_BINAllFramesAs1stFrame->GetValue();
   _log(wxString::Format(_("All frames as 1st frame: %s\n"), all_frames_as_1st ? _("YES") : _("NO")));
 
-  try{
+  const wxString dest_file_path = file_path + ".dcm";
+  try {
     using namespace tape_scanner::dicom_generator;
     ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
-                    [this](const std::string& msg){ _log(msg); });
+                    [this](const std::string& msg){ _log(msg); },
+                    dest_file_path.ToStdString());
+    _log(wxString::Format(_("Successfuly converted. See - %s\n"), dest_file_path));
   }
-  catch(...){
-    //TODO
+  catch (const std::runtime_error &error) {
+    _log(_(error.what()));
   }
-  // calculate minimum input file size
-  size_t frame_bin_size = width * height * (bits/8);
-  size_t src_file_size_min = frame_bin_size * frames;
-  _log(wxString::Format(_("Input file minimum size: %zu bytes\n"), src_file_size_min));
-  // setup desitnation file data
-  wxString dest_file_path = file_path + ".dcm";
-  // vars allocation
-  char cstr[256];
-  E_TransferSyntax writeXfer = EXS_LittleEndianImplicit;
-  DcmFileFormat dcm_file;
-  DcmDataset* dataset = dcm_file.getDataset();
-  DcmMetaInfo* metainfo = dcm_file.getMetaInfo();
-  OFCondition condition;
-  ifstream in;
-  size_t frame;
-  bool stop;
-  size_t src_file_size;
-  Uint8 *buf = NULL;
-  do {
-    // open input file
-    in.open(string(file_path.mb_str()), ios::in | ios::binary);
-    if (!in.is_open()) {
-      _log(_("ERROR: Can't open input file for reading.\n"));
-      break;
-    }
-    // get input file size
-    in.seekg(0,ios_base::end);
-    src_file_size = in.tellg();
-    in.seekg(0);
-    _log(wxString::Format(_("Input file size: %zu bytes\n"), src_file_size));
-    if (src_file_size < src_file_size_min) {
-      _log(_("ERROR: Input file size is too small.\n"));
-      break;
-    }
-    // allocate input buffer
-    buf = new Uint8[src_file_size_min];
-    if (!buf) {
-      _log(_("ERROR: Failed to allocate RAM buffer.\n"));
-      break;
-    }
-    // setup general info
-    // see info here - https://dicom.innolitics.com/ciods/
-    metainfo->putAndInsertOFStringArray(DCM_TransferSyntaxUID, UID_LittleEndianImplicitTransferSyntax);
-    // setup general tags
-    dataset->putAndInsertOFStringArray(DCM_SeriesNumber, "1");
-    dataset->putAndInsertOFStringArray(DCM_SeriesDescription, "Converted (BIN/RAW to DICOM)");
-    dataset->putAndInsertOFStringArray(DCM_SeriesInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_SERIES_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_Modality, "XC"); // External-camera Photography
-    dataset->putAndInsertOFStringArray(DCM_ConversionType, "SI"); // Scanned Image
-    dataset->putAndInsertOFStringArray(DCM_PatientName, "BIN^TO^DICOM");
-    dataset->putAndInsertOFStringArray(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_INSTANCE_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_StudyID, dcmGenerateUniqueIdentifier(cstr, SITE_STUDY_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_BurnedInAnnotation, "NO");
-    dataset->putAndInsertOFStringArray(DCM_NominalScannedPixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelAspectRatio, "[1, 1]"); // [row, column]
-    dataset->putAndInsertOFStringArray(DCM_PhotometricInterpretation, "MONOCHROME2");
-    dataset->putAndInsertOFStringArray(DCM_RescaleIntercept, "0");
-    dataset->putAndInsertOFStringArray(DCM_RescaleSlope, "1");
-    dataset->putAndInsertOFStringArray(DCM_RescaleType, "US");
-    dataset->putAndInsertOFStringArray(DCM_PresentationLUTShape, "IDENTITY");
-    dataset->putAndInsertUint16(DCM_SamplesPerPixel, 1);
-    dataset->putAndInsertUint16(DCM_BitsAllocated, bits > 8 ? 16 : 8);
-    dataset->putAndInsertUint16(DCM_BitsStored, bits);
-    dataset->putAndInsertUint16(DCM_HighBit, bits-1);
-    dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
-    dataset->putAndInsertUint16(DCM_Rows, height);
-    dataset->putAndInsertUint16(DCM_Columns, width);
-    // setup multi-frame DICOM file
-    if (frames > 1) {
-      // setup storage
-      dataset->putAndInsertOFStringArray(DCM_SOPClassUID, (bits > 8) ?
-                                                              UID_MultiframeGrayscaleWordSecondaryCaptureImageStorage :
-                                                              UID_MultiframeGrayscaleByteSecondaryCaptureImageStorage);
-      // setup frames
-      OFStandard::snprintf(cstr, 30, "%zu", frames);
-      dataset->putAndInsertOFStringArray(DCM_NumberOfFrames, cstr);
-      dataset->putAndInsertOFStringArray(DCM_FrameTime, "1000");
-      dataset->putAndInsertTagKey(DCM_FrameIncrementPointer, DCM_FrameTime);
-      // if all frames must be a copy of 1st frame
-      if (all_frames_as_1st) {
-        for (stop = false, frame = 0; frame < frames; frame++) {
-          // read input file into buffer
-          in.seekg(0);
-          if (in.read((char *)&buf[frame_bin_size * frame], frame_bin_size).bad()) {
-            _log(_("ERROR: Failed to read input file into RAM buffer.\n"));
-            stop = true;
-            break;
-          }
-        }
-        if (stop) break;
-        // all frames must be unique
-      } else {
-        // read whole input file into buffer
-        if (in.read((char *)buf, src_file_size_min).bad()) {
-          _log(_("ERROR: Failed to read whole input file into RAM buffer.\n"));
-          break;
-        }
-      }
-      // setup single-frame DICOM file
-    } else {
-      // setup storage
-      dataset->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
-      // read whole input file into buffer
-      if (in.read((char *)buf, src_file_size_min).bad()) {
-        _log(_("ERROR: Failed to read whole input file into RAM buffer.\n"));
-        break;
-      }
-    }
-    // insert frames binary data
-    dataset->putAndInsertUint8Array(DCM_PixelData, buf, src_file_size_min);
-    // save destination file
-    condition = dcm_file.saveFile((const OFFilename)dest_file_path.mb_str(),
-                                  writeXfer, EET_ExplicitLength, EGL_recalcGL, EPD_noChange,
-                                  OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
-    if (condition.bad()) {
-      _log(_("ERROR: Failed to save resulting DICOM file.\n"));
-      break;
-    }
-  } while (0);
-  // free buffers
-  if (buf) delete [] buf;
-  if (in.is_open()) in.close();
-  // show success message
-  _log(wxString::Format(_("Successfuly converted. See - %s\n"), dest_file_path));
+  catch (const std::bad_alloc &) {
+    _log(_("ERROR: Failed to allocate RAM buffer.\n"));
+  }
+  catch (...) {
+    _log(_("ERROR: unexpected error occured when convert bin to dicom"));
+  }
 }
 
 void MyMainWindow::OnDCMCreate( wxCommandEvent& event ) {

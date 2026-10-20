@@ -1,3 +1,5 @@
+#include <tape_scanner/dicom_generator/BinToDcmConverter.hpp>
+#include <tape_scanner/dicom_generator/DcmCreator.hpp>
 #include <tape_scanner/scanner/DicomSeries.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
@@ -11,9 +13,11 @@
 #include <opencv2/core.hpp>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -623,6 +627,97 @@ void TestRulerPitch() {
   CHECK(Near(sy, 1.0));
 }
 
+bool ReadPixelSpacingText(const std::string &path, std::string &row, std::string &col) {
+  DcmFileFormat file;
+  if (file.loadFile(path.c_str()).bad()) {
+    return false;
+  }
+  OFString value;
+  if (file.getDataset()->findAndGetOFString(DCM_PixelSpacing, value, 0).bad()) {
+    return false;
+  }
+  row = value.c_str();
+  if (file.getDataset()->findAndGetOFString(DCM_PixelSpacing, value, 1).bad()) {
+    return false;
+  }
+  col = value.c_str();
+  return true;
+}
+
+void TestSingleSavePathSpacing() {
+  const auto dir = std::filesystem::temp_directory_path() / "tape_scanner_spacing";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+
+  cv::Mat sample(2, 2, CV_16UC1, cv::Scalar(7));
+  const std::string direct = (dir / "direct.dcm").string();
+  CHECK(saveToDcm(sample, direct));
+  std::string row;
+  std::string col;
+  CHECK(ReadPixelSpacingText(direct, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+  CHECK(row != "1.0");
+  CHECK(col != "1.0");
+
+  const std::string generated = (dir / "generated.dcm").string();
+  tape_scanner::dicom_generator::CreateDcm(generated, 2, 2, 16, 1, 9, 65535, 0, false);
+  CHECK(ReadPixelSpacingText(generated, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+  cv::Mat generated_pixels;
+  CHECK(LoadPixels(generated, generated_pixels));
+  CHECK(generated_pixels.at<uint16_t>(0, 0) == 9);
+
+  const std::string raw_path = (dir / "frame.bin").string();
+  {
+    std::ofstream raw(raw_path, std::ios::binary);
+    const uint16_t pixels[4] = {1, 2, 3, 4};
+    raw.write(reinterpret_cast<const char *>(pixels), sizeof(pixels));
+  }
+  const std::string converted = (dir / "converted.dcm").string();
+  tape_scanner::dicom_generator::ConvertBinToDcm(raw_path, 2, 2, 16, 1, false, [](const std::string &) {},
+                                                 converted);
+  CHECK(ReadPixelSpacingText(converted, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+  cv::Mat converted_pixels;
+  CHECK(LoadPixels(converted, converted_pixels));
+  CHECK(converted_pixels.at<uint16_t>(0, 0) == 1);
+  CHECK(converted_pixels.at<uint16_t>(0, 1) == 2);
+  CHECK(converted_pixels.at<uint16_t>(1, 0) == 3);
+  CHECK(converted_pixels.at<uint16_t>(1, 1) == 4);
+
+  const std::string raw8_path = (dir / "frame8.bin").string();
+  {
+    std::ofstream raw(raw8_path, std::ios::binary);
+    const uint8_t pixels[4] = {10, 20, 30, 40};
+    raw.write(reinterpret_cast<const char *>(pixels), sizeof(pixels));
+  }
+  const std::string converted8 = (dir / "converted8.dcm").string();
+  tape_scanner::dicom_generator::ConvertBinToDcm(raw8_path, 2, 2, 8, 1, false, [](const std::string &) {},
+                                                 converted8);
+  CHECK(ReadPixelSpacingText(converted8, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+  cv::Mat converted8_pixels;
+  CHECK(LoadPixels(converted8, converted8_pixels));
+  CHECK(converted8_pixels.at<uint16_t>(0, 0) == 10);
+  CHECK(converted8_pixels.at<uint16_t>(1, 1) == 40);
+
+  const std::string series = (dir / "series.dcm").string();
+  tape_scanner::dicom_generator::CreateDcm(series, 2, 2, 16, 2, 4, 65535, 0, false);
+  CHECK(ReadPixelSpacingText(series, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+  const std::string series_second = (dir / "series_002.dcm").string();
+  CHECK(ReadPixelSpacingText(series_second, row, col));
+  CHECK(row == "0.042");
+  CHECK(col == "0.042");
+
+  std::filesystem::remove_all(dir);
+}
+
 } // namespace
 
 int main() {
@@ -633,6 +728,7 @@ int main() {
   TestSeriesListSkipsPixelData();
   TestWindowLevel();
   TestRulerPitch();
+  TestSingleSavePathSpacing();
 
   if (g_failures != 0) {
     std::cerr << g_failures << " check(s) failed\n";

@@ -1,16 +1,19 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "DicomGeneratorUtils.hpp"
-#include <dcmtk/dcmdata/dcdeftag.h>
-#include <dcmtk/dcmdata/dcfilefo.h>
-#include <dcmtk/dcmdata/dcmetinf.h>
 #include <dcmtk/dcmdata/dcuid.h>
-#include <dcmtk/dcmdata/dcxfer.h>
+#include <opencv2/core.hpp>
+
+#include <tape_scanner/scanner/Utils.hpp>
+
+#include "DicomGeneratorUtils.hpp"
 
 namespace tape_scanner::dicom_generator {
 
@@ -20,18 +23,24 @@ using std::vector;
 
 /**
  * @brief CreateDcm - создать тестовый DCM файл по заданным параметрам.
- * @param dest_file_path - путь до результирующего файла.
+ * Пиксели пишутся только через saveToDcm (Utils.cpp). Pixel Spacing берётся из DicomWriteParams.
+ * @param dest_file_path - путь до результирующего файла. При frames > 1 первый кадр
+ *        пишется сюда, следующие — с суффиксом _002, _003, …
  * @param width - ширина фрейма.
  * @param height - высота фрейма.
- * @param bits - количесво бит для хранения одного пикселя (как правило, 8 или 16).
+ * @param bits - количесво бит для хранения одного пикселя (8 или 16).
  * @param frames - количество фреймов.
  * @param fill_value - каким значением заполнить каждый пиксель.
  * @param fill_value_max - максимальное значение пикселя. Используется при инкрементировании.
  * @param fill_value_increment - на какое значение инкрементировать значение следующего пикселя.
  * @param increment_for_new_frames_only - инкрементировать все значения пикселей только для каждого нового фрейма.
  */
-void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, size_t frames, size_t fill_value,
-               size_t fill_value_max, size_t fill_value_increment, bool increment_for_new_frames_only) {
+inline void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, size_t frames,
+                      size_t fill_value, size_t fill_value_max, size_t fill_value_increment,
+                      bool increment_for_new_frames_only) {
+  if (bits != 8 && bits != 16) {
+    throw runtime_error("ERROR: only 8 or 16 bits per pixel.\n");
+  }
 
   if (!width) {
     width = 1;
@@ -51,97 +60,77 @@ void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, 
     frames = FRAME_MAX_COUNT;
   }
 
-  // calculate minimum input file size
-  size_t frame_bin_size = width * height * (bits / 8);
-  size_t frames_bin_size = frame_bin_size * frames;
-  // vars allocation
-  char cstr[256];
-  E_TransferSyntax writeXfer = EXS_LittleEndianImplicit;
-  DcmFileFormat dcm_file;
-  DcmDataset *dataset = dcm_file.getDataset();
-  DcmMetaInfo *metainfo = dcm_file.getMetaInfo();
-  OFCondition condition;
-  size_t frame;
+  const size_t frame_bin_size = width * height * (bits / 8);
+  const size_t frames_bin_size = frame_bin_size * frames;
+  vector<uint8_t> buf(frames_bin_size);
 
-  vector<Uint8> buf(frames_bin_size);
-
-  // setup general info
-  // see info here - https://dicom.innolitics.com/ciods/
-  metainfo->putAndInsertOFStringArray(DCM_TransferSyntaxUID, UID_LittleEndianImplicitTransferSyntax);
-  // setup general tags
-  dataset->putAndInsertOFStringArray(DCM_SeriesNumber, "1");
-  dataset->putAndInsertOFStringArray(DCM_SeriesDescription, "Auto-generated (parametric)");
-  dataset->putAndInsertOFStringArray(DCM_SeriesInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_SERIES_UID_ROOT));
-  dataset->putAndInsertOFStringArray(DCM_Modality, "XC");       // External-camera Photography
-  dataset->putAndInsertOFStringArray(DCM_ConversionType, "SI"); // Scanned Image
-  dataset->putAndInsertOFStringArray(DCM_PatientName, "PARAMETRIC^DICOM^GENERATOR");
-  dataset->putAndInsertOFStringArray(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_INSTANCE_UID_ROOT));
-  dataset->putAndInsertOFStringArray(DCM_StudyID, dcmGenerateUniqueIdentifier(cstr, SITE_STUDY_UID_ROOT));
-  dataset->putAndInsertOFStringArray(DCM_BurnedInAnnotation, "NO");
-  dataset->putAndInsertOFStringArray(DCM_NominalScannedPixelSpacing, "1.0\\1.0"); // mm, row\column
-  dataset->putAndInsertOFStringArray(DCM_PixelSpacing, "1.0\\1.0");               // mm, row\column
-  dataset->putAndInsertOFStringArray(DCM_PixelAspectRatio, "[1, 1]");             // [row, column]
-  dataset->putAndInsertOFStringArray(DCM_PhotometricInterpretation, "MONOCHROME2");
-  dataset->putAndInsertOFStringArray(DCM_RescaleIntercept, "0");
-  dataset->putAndInsertOFStringArray(DCM_RescaleSlope, "1");
-  dataset->putAndInsertOFStringArray(DCM_RescaleType, "US");
-  dataset->putAndInsertOFStringArray(DCM_PresentationLUTShape, "IDENTITY");
-  dataset->putAndInsertUint16(DCM_SamplesPerPixel, 1);
-  dataset->putAndInsertUint16(DCM_BitsAllocated, bits > 8 ? 16 : 8);
-  dataset->putAndInsertUint16(DCM_BitsStored, bits);
-  dataset->putAndInsertUint16(DCM_HighBit, bits - 1);
-  dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
-  dataset->putAndInsertUint16(DCM_Rows, height);
-  dataset->putAndInsertUint16(DCM_Columns, width);
-  // setup multi-frame DICOM file
-  if (frames > 1) {
-    // setup storage
-    dataset->putAndInsertOFStringArray(DCM_SOPClassUID, (bits > 8)
-                                                            ? UID_MultiframeGrayscaleWordSecondaryCaptureImageStorage
-                                                            : UID_MultiframeGrayscaleByteSecondaryCaptureImageStorage);
-    // setup frames
-    OFStandard::snprintf(cstr, 30, "%zu", frames);
-    dataset->putAndInsertOFStringArray(DCM_NumberOfFrames, cstr);
-    dataset->putAndInsertOFStringArray(DCM_FrameTime, "1000");
-    dataset->putAndInsertTagKey(DCM_FrameIncrementPointer, DCM_FrameTime);
-    // setup single-frame DICOM file
-  } else {
-    // setup storage
-    dataset->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
-  }
   if (fill_value == UINT32_MAX) {
-    // fill buffer with random values
-    std::generate(buf.begin(), buf.end(), []() { return rand() % 256; });
+    std::generate(buf.begin(), buf.end(), []() { return static_cast<uint8_t>(rand() % 256); });
   } else {
-    // fill buffer with exact values
     size_t value = fill_value;
-    for (frame = 0; frame < frames; frame++) {
-      size_t bytes_per_value = bits / 8;
+    for (size_t frame = 0; frame < frames; ++frame) {
+      const size_t bytes_per_value = bits / 8;
       for (size_t byte = 0; byte < frame_bin_size; byte += bytes_per_value) {
-        if (bytes_per_value > 1)
-          *((Uint16 *)&buf[frame_bin_size * frame + byte]) = value;
-        else
-          buf[frame_bin_size * frame + byte] = value;
+        if (bytes_per_value > 1) {
+          *reinterpret_cast<uint16_t *>(&buf[frame_bin_size * frame + byte]) = static_cast<uint16_t>(value);
+        } else {
+          buf[frame_bin_size * frame + byte] = static_cast<uint8_t>(value);
+        }
         if (fill_value_increment && !increment_for_new_frames_only) {
           value += fill_value_increment;
-          if (value > fill_value_max)
+          if (value > fill_value_max) {
             value = 0;
+          }
         }
       }
       if (fill_value_increment && increment_for_new_frames_only) {
         value += fill_value_increment;
-        if (value > fill_value_max)
+        if (value > fill_value_max) {
           value = 0;
+        }
       }
     }
   }
-  // insert frames binary data
-  dataset->putAndInsertUint8Array(DCM_PixelData, buf.data(), frames_bin_size);
-  // save destination file
-  condition = dcm_file.saveFile((const OFFilename)dest_file_path.c_str(), writeXfer, EET_ExplicitLength, EGL_recalcGL,
-                                EPD_noChange, OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
-  if (condition.bad()) {
-    throw runtime_error("ERROR: Failed to save resulting DICOM file.\n");
+
+  DicomWriteParams params;
+  char study_uid[100];
+  char series_uid[100];
+  params.study_instance_uid = dcmGenerateUniqueIdentifier(study_uid, SITE_STUDY_UID_ROOT);
+  params.series_instance_uid = dcmGenerateUniqueIdentifier(series_uid, SITE_SERIES_UID_ROOT);
+
+  auto frame_path = [&](size_t instance) -> string {
+    if (instance <= 1) {
+      return dest_file_path;
+    }
+    const auto slash = dest_file_path.find_last_of("/\\");
+    const auto dot = dest_file_path.find_last_of('.');
+    const bool has_ext = dot != string::npos && (slash == string::npos || dot > slash);
+    const string stem = has_ext ? dest_file_path.substr(0, dot) : dest_file_path;
+    const string ext = has_ext ? dest_file_path.substr(dot) : string(".dcm");
+    string index = std::to_string(instance);
+    if (index.size() < 3) {
+      index.insert(0, 3 - index.size(), '0');
+    }
+    return stem + "_" + index + ext;
+  };
+
+  for (size_t frame = 0; frame < frames; ++frame) {
+    cv::Mat image(static_cast<int>(height), static_cast<int>(width), CV_16UC1);
+    const uint8_t *src = buf.data() + frame_bin_size * frame;
+    if (bits > 8) {
+      std::memcpy(image.data, src, frame_bin_size);
+    } else {
+      uint16_t *dst = image.ptr<uint16_t>();
+      const size_t count = width * height;
+      for (size_t i = 0; i < count; ++i) {
+        dst[i] = src[i];
+      }
+    }
+    params.instance_number = static_cast<int>(frame + 1);
+    params.sop_instance_uid.clear();
+    if (!saveToDcm(image, frame_path(frame + 1), params)) {
+      throw runtime_error("ERROR: Failed to save resulting DICOM file.\n");
+    }
   }
 }
 
