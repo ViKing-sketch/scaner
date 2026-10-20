@@ -23,6 +23,8 @@ public:
 
     bool TryConnect();
     bool IsConnected();
+    // TCP handshake only. Does not send motion commands and does not keep the socket.
+    bool Probe();
 
     void SendAnyCommand(const std::string& any_command);
     void GoCameraTo(int x, bool wait = true);

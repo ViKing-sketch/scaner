@@ -191,7 +191,7 @@ private:
         wxT("English"),
         wxT("Russian")
     };
-    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14;
+    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14 + 5;
     wxString lng_str[lng_cnt][lng_str_cnt] = {
         {
             //
@@ -408,6 +408,11 @@ private:
             wxT("Pick X"),
             wxT("Pick Y"),
             wxT("Pixels are counted on the saved grid; optical pitch divides by bin."),
+            wxT("Network.."),
+            wxT("Find camera"),
+            wxT("Check controller"),
+            wxT("Save"),
+            wxT("Cancel"),
         },
         {
             //
@@ -624,6 +629,11 @@ private:
             wxT("Указать X"),
             wxT("Указать Y"),
             wxT("Пиксели считаются по сохранённой сетке; оптический шаг делится на bin."),
+            wxT("Сеть.."),
+            wxT("Найти камеру"),
+            wxT("Проверить контроллер"),
+            wxT("Сохранить"),
+            wxT("Отмена"),
     },
     };
 };
