@@ -19,6 +19,7 @@ add_library(tape_scanner_scan STATIC
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
     src/scanner/WindowLevel.cpp
+    src/scanner/LinkLoss.cpp
 )
 target_include_directories(tape_scanner_scan PUBLIC "include/")
 target_link_libraries(tape_scanner_scan PUBLIC ${OpenCV_LIBS})
@@ -43,6 +44,13 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+add_executable(test_link_loss tests/test_link_loss.cpp)
+target_link_libraries(test_link_loss PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_link_loss PRIVATE /utf-8)
+endif()
+add_test(NAME test_link_loss COMMAND test_link_loss)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)

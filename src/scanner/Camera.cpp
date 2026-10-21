@@ -17,35 +17,94 @@ void TryOrLogicError(CameraSdkStatus status, const std::string& error_msg) {
 Camera::Camera() {}
 
 Camera::~Camera() {
-  if (IsConnected())
-    CameraUnInit(m_h_camera);
-
-  if (this->m_frame_buffer)
-    CameraAlignFree(this->m_frame_buffer);
-
-  if (m_output_frame_buffer)
-    delete[] m_output_frame_buffer;
+  std::lock_guard lock(m_mutex);
+  ReleaseUnlocked();
 }
 
-bool Camera::TryConnect() {
-  try {
-    if (CameraSdkInit(0) != CAMERA_STATUS_SUCCESS) {
-      throw std::logic_error("CameraSdkInit failed");
-    }
+bool Camera::TryConnect() { return TryReconnect(); }
 
-    int h_camera = GetFirstCamera();
-    InitResponses();
-  } catch (std::runtime_error &e) {
-    wxLogError(wxString::Format("Connect to camera error! %s", e.what()));
+bool Camera::Probe() {
+  std::lock_guard lock(m_mutex);
+  if (m_h_camera < 0) {
     return false;
   }
+  const bool up = CameraConnectTest(m_h_camera) == CAMERA_STATUS_SUCCESS;
+  m_link_down = !up;
+  return up;
+}
 
-  wxLogMessage("Successful connect to camera");
-  return true;
+bool Camera::TryReconnect() {
+  std::lock_guard lock(m_mutex);
+  try {
+    if (m_h_camera >= 0 && CameraConnectTest(m_h_camera) == CAMERA_STATUS_SUCCESS) {
+      m_link_down = false;
+      return true;
+    }
+    if (m_h_camera >= 0) {
+      if (CameraReConnect(m_h_camera) == CAMERA_STATUS_SUCCESS &&
+          CameraConnectTest(m_h_camera) == CAMERA_STATUS_SUCCESS) {
+        m_link_down = false;
+        wxLogMessage("Camera reconnected");
+        return true;
+      }
+      ReleaseUnlocked();
+    }
+    OpenFirstUnlocked();
+    m_link_down = false;
+    wxLogMessage("Successful connect to camera");
+    return true;
+  } catch (const std::exception &e) {
+    wxLogError(wxString::Format("Connect to camera error! %s", e.what()));
+    m_link_down = true;
+    return false;
+  }
 }
 
 bool Camera::IsConnected() {
-    return this->m_h_camera > -1;
+  std::lock_guard lock(m_mutex);
+  return m_h_camera >= 0 && !m_link_down;
+}
+
+void Camera::OpenFirstUnlocked() {
+  if (CameraSdkInit(0) != CAMERA_STATUS_SUCCESS) {
+    throw std::logic_error("CameraSdkInit failed");
+  }
+  GetFirstCamera();
+  InitResponses();
+}
+
+void Camera::ReleaseUnlocked() {
+  if (m_h_camera >= 0) {
+    CameraUnInit(m_h_camera);
+    m_h_camera = -1;
+  }
+  if (m_frame_buffer) {
+    CameraAlignFree(m_frame_buffer);
+    m_frame_buffer = nullptr;
+  }
+  if (m_output_frame_buffer) {
+    delete[] m_output_frame_buffer;
+    m_output_frame_buffer = nullptr;
+  }
+  m_link_down = true;
+}
+
+bool Camera::GrabIsLinkLoss(CameraSdkStatus status) {
+  switch (status) {
+  case CAMERA_STATUS_COMM_ERROR:
+  case CAMERA_STATUS_BUS_ERROR:
+  case CAMERA_STATUS_NO_DEVICE_FOUND:
+  case CAMERA_STATUS_DEVICE_IS_CLOSED:
+  case CAMERA_STATUS_SOCKET_INIT_ERROR:
+  case CAMERA_STATUS_NET_SEND_ERROR:
+  case CAMERA_STATUS_DEVICE_LOST:
+  case CAMERA_STATUS_GIGE_FILTER_INIT_ERROR:
+    return true;
+  case CAMERA_STATUS_TIME_OUT:
+    return m_h_camera < 0 || CameraConnectTest(m_h_camera) != CAMERA_STATUS_SUCCESS;
+  default:
+    return false;
+  }
 }
 
 void Camera::EnableAutoExpose(bool enable) {
@@ -74,9 +133,14 @@ uint8_t* Camera::GetCadr(tSdkFrameHead& frame_info, double expose) {
     CameraClearBuffer(m_h_camera);
     CameraSoftTrigger(m_h_camera);
 
-    TryOrLogicError(
-        CameraGetImageBuffer(m_h_camera, &frame_info, &raw_data, 3000),
-        "GetImageBufferPriority error!");
+    const CameraSdkStatus grab = CameraGetImageBuffer(m_h_camera, &frame_info, &raw_data, 3000);
+    if (grab != CAMERA_STATUS_SUCCESS) {
+      if (GrabIsLinkLoss(grab)) {
+        m_link_down = true;
+        throw LinkLost(LinkEnd::Camera);
+      }
+      throw std::runtime_error("GetImageBufferPriority error!");
+    }
 
 
     // CameraImageProcess(this->m_h_camera, raw_data, this->m_frame_buffer,
@@ -124,8 +188,8 @@ void Camera::SaveCadrTo(const std::string& dest_path) {
 }
 
 wxBitmap Camera::Snapshot(double expose) {
-    if (m_h_camera < 0) {
-        throw std::logic_error("Camera not connected!");
+    if (m_h_camera < 0 || m_link_down) {
+        throw LinkLost(LinkEnd::Camera);
     }
 
     auto mat = GetMat(expose);
@@ -139,8 +203,8 @@ wxBitmap Camera::Snapshot(double expose) {
 cv::Mat Camera::GetMat(double expose) {
   std::lock_guard lock(m_mutex);
 
-    if (m_h_camera < 0) {
-        throw std::logic_error("Camera not connected!");
+    if (m_h_camera < 0 || m_link_down) {
+        throw LinkLost(LinkEnd::Camera);
     }
 
     tSdkFrameHead frame_info;

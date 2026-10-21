@@ -13,6 +13,8 @@
 #include <opencv2/opencv.hpp>
 #include <stdexcept>
 
+#include <tape_scanner/scanner/LinkLoss.hpp>
+
 
 class Camera {
 public:
@@ -20,6 +22,10 @@ public:
     ~Camera();
 
     bool TryConnect();
+    /// ConnectTest, затем CameraReConnect, затем полный перебор, если рукоять умерла.
+    bool TryReconnect();
+    /// true, пока CameraConnectTest видит камеру. Связь не поднимает.
+    bool Probe();
     bool IsConnected();
 
     void EnableAutoExpose(bool enable = true);
@@ -36,9 +42,13 @@ public:
   private:
     int GetFirstCamera();
     void InitResponses();
+    void OpenFirstUnlocked();
+    void ReleaseUnlocked();
+    bool GrabIsLinkLoss(CameraSdkStatus status);
     cv::Mat ToRadiance(std::vector<cv::Mat> imgs_16, std::vector<float> exposes);
 
     int m_h_camera = -1;
+    bool m_link_down = false;
     uint8_t* m_frame_buffer = nullptr;
     uint8_t* m_output_frame_buffer = nullptr;
     bool m_is_mono = false;

@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <string>
 
+#include <tape_scanner/scanner/LinkLoss.hpp>
+
 #include <wx/event.h>
 #include <wx/socket.h>
 
@@ -22,7 +24,15 @@ public:
     ~Controller() override = default;
 
     bool TryConnect();
+    /// То же соединение, что и TryConnect, но без G1 HOME. Для обрыва связи.
+    bool Reconnect();
+    /// Сокет жив и команда положения ушла. Обрыв помечает соединение закрытым.
+    bool Probe();
     bool IsConnected();
+    /// G0 STOP и G1 STOP. Без home и без сброса позиции.
+    bool HaltMotors();
+    /// Сначала стоп, затем G0 HOME и G1 HOME. Только если так сказано в settings.ini.
+    bool HomeMotors();
 
     void SendAnyCommand(const std::string& any_command);
     void GoCameraTo(int x, bool wait = true);
@@ -43,7 +53,8 @@ public:
 private:
     void InitSocket();
     bool OpenConnection();
-    void InitControllerAfterConnect();
+    bool OpenAndInit(bool startup_home);
+    void MarkDisconnected();
     void SendData(const std::string& data);
     std::string SendCommand(const std::string& data, int wait_sec = 1, int wait_usec = 0);
     std::string& ReadData(int wait_sec = 0, int wait_usec = 0, size_t expected_count = in_buf_size);

@@ -16,18 +16,51 @@ Controller::Controller(wxString ip_address, int port) {
     InitSocket();
 }
 
-bool Controller::TryConnect() {
-    m_status = Status::try_connect;
-    auto res = OpenConnection();
-    if (res) {
-        m_status = Status::connected;
-        InitControllerAfterConnect();
+bool Controller::TryConnect() { return OpenAndInit(true); }
+
+bool Controller::Reconnect() { return OpenAndInit(false); }
+
+bool Controller::Probe() {
+    if (m_status != Status::connected || !m_socket.IsConnected()) {
+        MarkDisconnected();
+        return false;
     }
-    return res;
+    try {
+        SendCommand("G0 POSITION", 0, 300000);
+        return m_status == Status::connected && m_socket.IsConnected();
+    } catch (const LinkLost &) {
+        return false;
+    }
+}
+
+bool Controller::HaltMotors() {
+    if (m_status != Status::connected) {
+        return false;
+    }
+    try {
+        SendData("G0 STOP");
+        SendData("G1 STOP");
+        return m_status == Status::connected;
+    } catch (const LinkLost &) {
+        return false;
+    }
+}
+
+bool Controller::HomeMotors() {
+    if (!HaltMotors() && m_status != Status::connected) {
+        return false;
+    }
+    try {
+        GoCameraToHome(false);
+        ResetRollerPos();
+        return m_status == Status::connected;
+    } catch (const LinkLost &) {
+        return false;
+    }
 }
 
 bool Controller::IsConnected() {
-    return m_status == Status::connected;
+    return m_status == Status::connected && m_socket.IsConnected();
 }
 
 void Controller::SendAnyCommand(const std::string& any_command) {
@@ -131,27 +164,60 @@ bool Controller::OpenConnection() {
   return m_socket.WaitOnConnect(1, 0);
 }
 
-void Controller::InitControllerAfterConnect() {
-    SetAcceleration(100000);
-    SetSpeed(15000);
-    SetRollerSpeed(15000);
-    SendCommand("G1 DIR1", 1);
-    ResetRollerPos();
-    // GoCameraToHome(false);
+bool Controller::OpenAndInit(bool startup_home) {
+    try {
+        if (m_socket.IsConnected()) {
+            m_socket.Close();
+        }
+        m_status = Status::try_connect;
+        if (!OpenConnection()) {
+            m_status = Status::disconnected;
+            return false;
+        }
+        m_status = Status::connected;
+        SetAcceleration(100000);
+        SetSpeed(15000);
+        SetRollerSpeed(15000);
+        SendCommand("G1 DIR1", 1);
+        // Повторное соединение после обрыва не вызывает G1 HOME.
+        // Первый успешный коннект по-прежнему обнуляет ролик.
+        if (startup_home) {
+            ResetRollerPos();
+        }
+        return m_status == Status::connected;
+    } catch (const std::exception &error) {
+        wxLogError("Controller connect failed: %s", error.what());
+        MarkDisconnected();
+        return false;
+    }
+}
+
+void Controller::MarkDisconnected() {
+    m_status = Status::disconnected;
+    if (m_socket.IsConnected()) {
+        m_socket.Close();
+    }
 }
 
 void Controller::SendData(const std::string& data) {
-    if (m_status != Status::connected)
-        throw std::logic_error("Camera motor is BUSY or connection status not connected");
+    if (m_status != Status::connected || !m_socket.IsConnected()) {
+        MarkDisconnected();
+        throw LinkLost(LinkEnd::Controller);
+    }
 
     ClearInput();
-    if(auto ready = m_socket.WaitForWrite(5)) {
-      m_socket.Write(data.data(), data.size());
-      wxLogMessage("Controller: data writen: %s", data);
+    if (!m_socket.WaitForWrite(5)) {
+        wxLogError("Controller: send data failed: %s", data);
+        MarkDisconnected();
+        throw LinkLost(LinkEnd::Controller);
     }
-    else{
-      wxLogError("Controller: send data failed: %s", data);
+    m_socket.Write(data.data(), data.size());
+    if (m_socket.Error() || static_cast<size_t>(m_socket.LastWriteCount()) != data.size()) {
+        wxLogError("Controller: send data failed: %s", data);
+        MarkDisconnected();
+        throw LinkLost(LinkEnd::Controller);
     }
+    wxLogMessage("Controller: data writen: %s", data);
 }
 
 std::string Controller::SendCommand(const std::string& data, int wait_sec, int wait_usec) {
@@ -162,7 +228,25 @@ std::string Controller::SendCommand(const std::string& data, int wait_sec, int w
 
 std::string& Controller::ReadData(int wait_sec, int wait_usec, size_t expected_count) {
     if (wait_sec || wait_usec) {
-        m_socket.WaitForRead(wait_sec, wait_usec);
+        if (!m_socket.WaitForRead(wait_sec, wait_usec)) {
+            wxSocketError err = wxSOCKET_NOERROR;
+            if (m_socket.Error()) {
+                err = m_socket.LastError();
+            }
+            const bool timed_out =
+                err == wxSOCKET_NOERROR || err == wxSOCKET_TIMEDOUT || err == wxSOCKET_WOULDBLOCK;
+            if (!m_socket.IsConnected() || !timed_out) {
+                MarkDisconnected();
+                throw LinkLost(LinkEnd::Controller);
+            }
+            m_in_buf.clear();
+            return m_in_buf;
+        }
+    }
+
+    if (!m_socket.IsConnected()) {
+        MarkDisconnected();
+        throw LinkLost(LinkEnd::Controller);
     }
 
     if (!m_socket.IsData()) {

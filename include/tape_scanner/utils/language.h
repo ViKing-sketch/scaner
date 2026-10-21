@@ -191,7 +191,7 @@ private:
         wxT("English"),
         wxT("Russian")
     };
-    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14;
+    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14 + 7;
     wxString lng_str[lng_cnt][lng_str_cnt] = {
         {
             //
@@ -408,6 +408,13 @@ private:
             wxT("Pick X"),
             wxT("Pick Y"),
             wxT("Pixels are counted on the saved grid; optical pitch divides by bin."),
+            wxT("Reconnect"),
+            wxT("Motors left in place."),
+            wxT("Motors returning home."),
+            wxT("Captured frames kept"),
+            wxT("Open scan not saved."),
+            wxT("Failed to save captured frames."),
+            wxT("Link lost. Scan stopped."),
         },
         {
             //
@@ -624,6 +631,13 @@ private:
             wxT("Указать X"),
             wxT("Указать Y"),
             wxT("Пиксели считаются по сохранённой сетке; оптический шаг делится на bin."),
+            wxT("Переподключить"),
+            wxT("Моторы оставлены на месте."),
+            wxT("Моторы возвращаются в ноль."),
+            wxT("Снятое сохранено"),
+            wxT("Открытый скан не записан."),
+            wxT("Не удалось сохранить снятое."),
+            wxT("Связь оборвалась. Скан остановлен."),
     },
     };
 };
