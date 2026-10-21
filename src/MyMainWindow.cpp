@@ -617,28 +617,35 @@ void MyMainWindow::SetupScanGeometryControls() {
   Layout();
 }
 
+ScanGeometry MyMainWindow::CurrentScanGeometry() const {
+  ScanGeometry geometry;
+  geometry.bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
+  if (m_pixel_um_x_text) {
+    geometry.pixel_um_x = safeStrToDouble(m_pixel_um_x_text->GetValue().ToStdString());
+  }
+  if (m_pixel_um_y_text) {
+    geometry.pixel_um_y = safeStrToDouble(m_pixel_um_y_text->GetValue().ToStdString());
+  }
+  return ScanGeometry::Normalized(geometry);
+}
+
 void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   if(!InitScanner()) {
     return;
   }
 
-  double steps_by_peer_pix_x = safeStrToDouble(m_steps_by_per_pix_x_text->GetValue());
-  double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue());
+  double steps_by_peer_pix_x = safeStrToDouble(m_steps_by_per_pix_x_text->GetValue().ToStdString());
+  double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue().ToStdString());
   m_scanner->SetStepsByPerPixel(steps_by_peer_pix_x, steps_by_peer_pix_y);
 
-  ScanGeometry geometry;
-  geometry.bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
-  if (m_pixel_um_x_text) {
-    geometry.pixel_um_x = safeStrToDouble(m_pixel_um_x_text->GetValue());
-  }
-  if (m_pixel_um_y_text) {
-    geometry.pixel_um_y = safeStrToDouble(m_pixel_um_y_text->GetValue());
-  }
-  if (!(geometry.pixel_um_x > 0.0) || !(geometry.pixel_um_y > 0.0)) {
+  const double pitch_x =
+      m_pixel_um_x_text ? safeStrToDouble(m_pixel_um_x_text->GetValue().ToStdString()) : kNominalPixelUm;
+  const double pitch_y =
+      m_pixel_um_y_text ? safeStrToDouble(m_pixel_um_y_text->GetValue().ToStdString()) : kNominalPixelUm;
+  if (!(pitch_x > 0.0) || !(pitch_y > 0.0)) {
     wxLogWarning("Pixel pitch must be positive; nominal 21 um is used");
   }
-  geometry = ScanGeometry::Normalized(geometry);
-  m_scanner->SetScanGeometry(geometry);
+  m_scanner->SetScanGeometry(CurrentScanGeometry());
 
   m_scanner->StartScan(m_dst_scan_file_path->GetPath().ToStdString());
 }
@@ -1501,7 +1508,7 @@ void MyMainWindow::OnJPGToDCMConvert( wxCommandEvent& event ) {
   }
   catch( std::runtime_error& error)
   {
-    _log(_(error.what()));
+    _log(wxString(error.what()));
   }
   catch(...)
   {
@@ -1554,13 +1561,22 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
   const wxString dest_file_path = file_path + ".dcm";
   try {
     using namespace tape_scanner::dicom_generator;
-    ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
-                    [this](const std::string& msg){ _log(msg); },
-                    dest_file_path.ToStdString());
-    _log(wxString::Format(_("Successfuly converted. See - %s\n"), dest_file_path));
+    const ScanGeometry geometry = CurrentScanGeometry();
+    const std::vector<std::string> written =
+        ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
+                        [this](const std::string &msg) { _log(msg); }, dest_file_path.ToStdString(),
+                        geometry.RowSpacingMm(), geometry.ColSpacingMm());
+    wxString names;
+    for (const std::string &path : written) {
+      if (!names.empty()) {
+        names += wxT("\n");
+      }
+      names += wxString::FromUTF8(path);
+    }
+    _log(wxString::Format(_("Successfuly converted. See - %s\n"), names));
   }
   catch (const std::runtime_error &error) {
-    _log(_(error.what()));
+    _log(wxString(error.what()));
   }
   catch (const std::bad_alloc &) {
     _log(_("ERROR: Failed to allocate RAM buffer.\n"));
@@ -1641,12 +1657,19 @@ void MyMainWindow::OnDCMCreate( wxCommandEvent& event ) {
 
 
   try {
-    tape_scanner::dicom_generator::CreateDcm(file_path.ToStdString(), width, height, bits, frames, fill_value, fill_value_max,
-                                             fill_value_increment, increment_for_new_frames_only);
-
-    _log(wxString::Format(_("Successfuly created. See - %s\n"), file_path));
+    const std::vector<std::string> written = tape_scanner::dicom_generator::CreateDcm(
+        file_path.ToStdString(), width, height, bits, frames, fill_value, fill_value_max, fill_value_increment,
+        increment_for_new_frames_only);
+    wxString names;
+    for (const std::string &path : written) {
+      if (!names.empty()) {
+        names += wxT("\n");
+      }
+      names += wxString::FromUTF8(path);
+    }
+    _log(wxString::Format(_("Successfuly created. See - %s\n"), names));
   } catch (std::runtime_error &e) {
-    _log(_(e.what()));
+    _log(wxString(e.what()));
   }
   catch (std::bad_alloc &e){
     _log(_("ERROR: Failed to allocate RAM buffer.\n"));

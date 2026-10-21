@@ -101,6 +101,7 @@ private:
   void ShowWindow(int center, int width);
   void ApplyOrientation();
   void ReloadScanBinChoice();
+  ScanGeometry CurrentScanGeometry() const;
   void ApplyRulerPitch(bool along_x);
   void OnRulerPixels(bool along_x, double pixels);
   bool InitController();

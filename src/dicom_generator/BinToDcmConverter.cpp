@@ -48,9 +48,11 @@ cv::Mat PixelsToMat(const uint8_t *bytes, size_t width, size_t height, size_t bi
 
 } // namespace
 
-void ConvertBinToDcm(string in_bin_file_path, size_t width, size_t height, size_t bits, size_t frames,
-                     bool all_frames_as_1st, std::function<void(const string &msg)> log_callback,
-                     string_opt out_dcm_file_path) {
+std::vector<std::string> ConvertBinToDcm(string in_bin_file_path, size_t width, size_t height, size_t bits,
+                                             size_t frames, bool all_frames_as_1st,
+                                             std::function<void(const string &msg)> log_callback,
+                                             string_opt out_dcm_file_path, double pixel_spacing_row_mm,
+                                             double pixel_spacing_col_mm) {
   if (bits != 8 && bits != 16) {
     throw runtime_error("ERROR: only 8 or 16 bits per pixel.\n");
   }
@@ -91,13 +93,17 @@ void ConvertBinToDcm(string in_bin_file_path, size_t width, size_t height, size_
     throw runtime_error("ERROR: Failed to read whole input file into RAM buffer.\n");
   }
 
-  // Единственная запись DICOM — saveToDcm. Шаг пикселя берётся из DicomWriteParams (0,042 мм по умолчанию).
+  // Единственная запись DICOM — saveToDcm. Шаг приходит от вызывающего кода.
   DicomWriteParams params;
   char study_uid[100];
   char series_uid[100];
   params.study_instance_uid = dcmGenerateUniqueIdentifier(study_uid, SITE_STUDY_UID_ROOT);
   params.series_instance_uid = dcmGenerateUniqueIdentifier(series_uid, SITE_SERIES_UID_ROOT);
+  params.pixel_spacing_row_mm = pixel_spacing_row_mm;
+  params.pixel_spacing_col_mm = pixel_spacing_col_mm;
 
+  std::vector<std::string> written;
+  written.reserve(frames);
   for (size_t frame = 0; frame < frames; ++frame) {
     cv::Mat image = PixelsToMat(buf.data() + frame_bin_size * frame, width, height, bits);
     params.instance_number = static_cast<int>(frame + 1);
@@ -106,8 +112,10 @@ void ConvertBinToDcm(string in_bin_file_path, size_t width, size_t height, size_
     if (!saveToDcm(image, path, params)) {
       throw runtime_error("ERROR: Failed to save resulting DICOM file.\n");
     }
+    written.push_back(path);
     log_callback(std::format("Saved {}\n", path));
   }
+  return written;
 }
 
 } // namespace tape_scanner::dicom_generator

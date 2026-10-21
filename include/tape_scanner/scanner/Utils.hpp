@@ -46,7 +46,8 @@ struct DicomWriteParams {
  * @brief Сохраняет CV_16UC1 в DICOM Secondary Capture без перевода в 8 бит.
  * @param image     Одноканальное 16-битное изображение. Rows и Columns не больше 60000.
  * @param filename  Путь DICOM-файла.
- * @param params    UID серии, номер экземпляра и Pixel Spacing.
+ * @param params    UID серии, номер экземпляра, Pixel Spacing (0028,0030)
+ *                  и Imager Pixel Spacing (0018,1164). Оба тега получают один шаг.
  * @return true     Файл записан.
  * @return false    Пустой кадр, чужой тип, слишком большой размер или ошибка DCMTK.
  */

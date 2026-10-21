@@ -34,10 +34,11 @@ using std::vector;
  * @param fill_value_max - максимальное значение пикселя. Используется при инкрементировании.
  * @param fill_value_increment - на какое значение инкрементировать значение следующего пикселя.
  * @param increment_for_new_frames_only - инкрементировать все значения пикселей только для каждого нового фрейма.
+ * @return пути всех записанных файлов, по одному на кадр.
  */
-inline void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, size_t frames,
-                      size_t fill_value, size_t fill_value_max, size_t fill_value_increment,
-                      bool increment_for_new_frames_only) {
+inline std::vector<std::string> CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits,
+                                            size_t frames, size_t fill_value, size_t fill_value_max,
+                                            size_t fill_value_increment, bool increment_for_new_frames_only) {
   if (bits != 8 && bits != 16) {
     throw runtime_error("ERROR: only 8 or 16 bits per pixel.\n");
   }
@@ -114,6 +115,8 @@ inline void CreateDcm(string dest_file_path, size_t width, size_t height, size_t
     return stem + "_" + index + ext;
   };
 
+  vector<string> written;
+  written.reserve(frames);
   for (size_t frame = 0; frame < frames; ++frame) {
     cv::Mat image(static_cast<int>(height), static_cast<int>(width), CV_16UC1);
     const uint8_t *src = buf.data() + frame_bin_size * frame;
@@ -128,10 +131,13 @@ inline void CreateDcm(string dest_file_path, size_t width, size_t height, size_t
     }
     params.instance_number = static_cast<int>(frame + 1);
     params.sop_instance_uid.clear();
-    if (!saveToDcm(image, frame_path(frame + 1), params)) {
+    const string path = frame_path(frame + 1);
+    if (!saveToDcm(image, path, params)) {
       throw runtime_error("ERROR: Failed to save resulting DICOM file.\n");
     }
+    written.push_back(path);
   }
+  return written;
 }
 
 } // namespace tape_scanner::dicom_generator
