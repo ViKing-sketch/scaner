@@ -102,6 +102,8 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["bin"] = scan_bin_default.c_str().AsChar();
     settings["scan"]["pixel_um_x"] = scan_pixel_um_x_default.c_str().AsChar();
     settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
+    settings[kLinkSection][kHoldMotorsKey] = "1";
+    settings[kLinkSection][kSaveCapturedKey] = "1";
     create = true;
   }
   if (!settings.has("settings") || !settings["settings"].has("language")) {
@@ -185,6 +187,16 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
     update = true;
   }
+  if (!settings.has(kLinkSection) || !settings[kLinkSection].has(kHoldMotorsKey)) {
+    settings[kLinkSection][kHoldMotorsKey] = "1";
+    update = true;
+  }
+  if (!settings.has(kLinkSection) || !settings[kLinkSection].has(kSaveCapturedKey)) {
+    settings[kLinkSection][kSaveCapturedKey] = "1";
+    update = true;
+  }
+  m_link_loss_settings = LinkLossSettingsFromText(settings[kLinkSection][kHoldMotorsKey],
+                                                  settings[kLinkSection][kSaveCapturedKey]);
   m_controller_ip_address_text->SetValue(wxString(settings["controller"]["ip_address"]));
   m_controller_net_mask_text->SetValue(wxString(settings["controller"]["net_mask"]));
   m_controller_gateway_text->SetValue(wxString(settings["controller"]["gateway"]));
@@ -327,121 +339,41 @@ void MyMainWindow::OnServiceTimer( wxTimerEvent& event ) {
 }
 
 void MyMainWindow::OnControllerTimer( wxTimerEvent& event ) {
-  InitController();
+  const bool scanning = m_scanner && m_scanner->IsRunning();
+  PullScannerLoss();
+  if (!scanning && !(m_scanner && m_scanner->IsRunning())) {
+    RefreshControllerLink();
+    ApplyPendingMotorPlan();
+  }
+  ShowLinkStatus();
 }
 
 void MyMainWindow::OnCameraTimer( wxTimerEvent& event ) {
-  if (tab == TAB_CAMERA) {
-    if(!InitCamera()){
-      return;
+  const bool scanning = m_scanner && m_scanner->IsRunning();
+  PullScannerLoss();
+  if (!scanning && !(m_scanner && m_scanner->IsRunning())) {
+    if (tab == TAB_CAMERA && !m_camera) {
+      m_camera = std::make_shared<Camera>();
     }
+    if (m_camera) {
+      RefreshCameraLink();
+    }
+    ApplyPendingMotorPlan();
+  }
+  ShowLinkStatus();
 
-    try {
-      m_camera_bitmap->SetBitmap(m_camera->Snapshot(safeStrToDouble(m_camera_exposure_time_text->GetValue())));
-    } catch (const std::exception &e) {
-      wxLogError(e.what());
-    }
+  if (tab != TAB_CAMERA || (m_scanner && m_scanner->IsRunning()) || !m_camera || !m_camera->IsConnected()) {
+    return;
   }
 
-  return;
-
-  static int reconnect_timer = 0;
-  CameraSdkStatus status;
-  double exposure_time;
-  if (camera_id < 0) {
-    // check/set reconnection timer
-    reconnect_timer -= m_camera_timer.GetInterval();
-    if (reconnect_timer > 0) return;
-    reconnect_timer = 1000;
-    SetStatusText(_("Connecting to camera.."), 1);
-    // get cameras list
-    int CameraNums = CameraEnumerateDeviceEx();
-    if (CameraNums < 1) return;
-    get_logger() << "Start init Camera \n";
-    // init camera
-    status = CameraInitEx(0, -1, -1, &camera_id);
-    if (status != CAMERA_STATUS_SUCCESS) {
-      camera_id = -1;
-      get_logger() << "Error: start init Camera \n";
-      return;
-    }
-    // load default parameters
-    // TODO - check file existing
-    get_logger() << "Start read Camera parameter from file \n";
-    status = CameraReadParameterFromFile(camera_id, (char*)"camera_default_parameters.Config");
-    if (status != CAMERA_STATUS_SUCCESS) {
-      camera_id = -1;
-      get_logger() << "Error: read camera parameter from file \n";
-      return;
-    }
-    // get camera info
-    CameraGetCapability(camera_id, &camera_info);
-    // Switch camera mode to continuous acquisition
-    CameraSetTriggerMode(camera_id, 0);
-    // Manual exposure, set exposure time
-    auto str = m_camera_exposure_time_text->GetValue();
-    exposure_time = atof(str.c_str().AsChar());
-    CameraSetAeState(camera_id, FALSE);
-    CameraSetExposureTime(camera_id, exposure_time);
-    // Let the SDK internal grab thread start working
-    CameraPlay(camera_id);
-    // allocate a buffer for camera frame
-    camera_frame_buffer_size = camera_info.sResolutionRange.iWidthMax
-                               * camera_info.sResolutionRange.iHeightMax
-                               * 3;
-    camera_frame_buffer = (BYTE*) CameraAlignMalloc(camera_frame_buffer_size, 16);
-    // TODO - check buffer pointer
-    // connection estabilished
-    if (!camera_connected) {
-      camera_connected = 1;
-      SetStatusText(_("Camera connected"), 1);
-    }
-  }
-  if (tab == TAB_CAMERA) {
-    // set exposure time
-    auto str = m_camera_exposure_time_text->GetValue();
-    exposure_time = atof(str.c_str().AsChar());
-    CameraSetExposureTime(camera_id, exposure_time);
-    // Take a frame from the camera
-    tSdkFrameHead FrameHead;
-    BYTE* pRawData;
-    status = CameraGetImageBuffer(camera_id, &FrameHead, &pRawData, 10);
-    if (status == CAMERA_STATUS_SUCCESS) {
-      CameraSetIspOutFormat(camera_id, CAMERA_MEDIA_TYPE_RGB8);
-      CameraImageProcess(camera_id, pRawData, camera_frame_buffer, &FrameHead);
-      CameraReleaseImageBuffer(camera_id, pRawData);
-      CameraFlipFrameBuffer(camera_frame_buffer, &FrameHead, 1);
-      // display a frame in the preview
-      wxImage img(FrameHead.iWidth, FrameHead.iHeight, camera_frame_buffer, true);
-      float ratio = ((float)FrameHead.iHeight) / ((float)FrameHead.iWidth);
-      auto size = m_camera_bitmap->GetParent()->GetSize();
-      //int box_width = size.GetWidth() - 20;
-      int box_height = size.GetHeight() - 20;
-      int scaled_width = (int) (((float)box_height) / ratio);
-      int scaled_height = box_height - 20;
-      auto scaled_img = img.Scale(scaled_width, scaled_height);
-      wxBitmap bmp(scaled_img);
-      m_camera_bitmap->SetBitmap(bmp);
-    }
-  } else {
-    status = CameraConnectTest(camera_id);
-  }
-  if (status != CAMERA_STATUS_SUCCESS) {
-    // update/check connection timeout
-    camera_connection_timeout += m_camera_timer.GetInterval();
-    if (camera_connection_timeout > camera_connection_timeout_max) {
-      CameraUnInit(camera_id);
-      CameraAlignFree(camera_frame_buffer);
-      camera_id = -1;
-      camera_frame_buffer = NULL;
-      camera_frame_buffer_size = 0;
-      if (camera_connected) {
-        camera_connected = 0;
-        SetStatusText(_("Camera disconnected"), 1);
-      }
-    }
-  } else {
-    camera_connection_timeout = 0;
+  try {
+    m_camera_bitmap->SetBitmap(m_camera->Snapshot(safeStrToDouble(m_camera_exposure_time_text->GetValue())));
+  } catch (const LinkLost &) {
+    m_camera_link = LinkPhase::Reconnecting;
+    OnIdleLinkLost(false);
+    ShowLinkStatus();
+  } catch (const std::exception &e) {
+    wxLogError(e.what());
   }
 }
 
@@ -457,6 +389,10 @@ void MyMainWindow::OnLanguageEnglish(wxCommandEvent& event) {
   lng->set(wxT("English"));
   lng->translate_frame(this, wxT("LAST"), wxT("CURRENT"));
   ReloadScanBinChoice();
+  if (m_link_reconnect_btn) {
+    m_link_reconnect_btn->SetLabel(_("Reconnect"));
+  }
+  ShowLinkStatus();
   settings["settings"]["language"] = "English";
   _settings_file_update();
 }
@@ -465,6 +401,10 @@ void MyMainWindow::OnLanguageRussian(wxCommandEvent& event) {
   lng->set(wxT("Russian"));
   lng->translate_frame(this, wxT("LAST"), wxT("CURRENT"));
   ReloadScanBinChoice();
+  if (m_link_reconnect_btn) {
+    m_link_reconnect_btn->SetLabel(_("Reconnect"));
+  }
+  ShowLinkStatus();
   settings["settings"]["language"] = "Russian";
   _settings_file_update();
 }
@@ -543,6 +483,15 @@ void MyMainWindow::SetupScanGeometryControls() {
     return lng->translate(english, wxT("English"), wxT("CURRENT"));
   };
 
+  m_link_status_text = new wxStaticText(scan_box, wxID_ANY, labelOf(wxT("Camera disconnected")));
+  m_link_status_text->Wrap(640);
+  m_link_reconnect_btn = new wxButton(scan_box, wxID_ANY, labelOf(wxT("Reconnect")));
+  auto *link_row = new wxBoxSizer(wxHORIZONTAL);
+  link_row->Add(m_link_status_text, 1, wxALL | wxALIGN_CENTER_VERTICAL, 8);
+  link_row->Add(m_link_reconnect_btn, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+  scan_sizer->Insert(0, link_row, 0, wxEXPAND, 5);
+  m_link_reconnect_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent &event) { OnLinkReconnect(event); });
+
   m_pixel_um_x_text = new wxTextCtrl(scan_box, wxID_ANY);
   m_pixel_um_x_text->SetMinSize(wxSize(80, -1));
   m_pixel_um_y_text = new wxTextCtrl(scan_box, wxID_ANY);
@@ -610,6 +559,7 @@ void MyMainWindow::SetupScanGeometryControls() {
   autosave_pixel_um_x = m_pixel_um_x_text->GetValue();
   autosave_pixel_um_y = m_pixel_um_y_text->GetValue();
 
+  ShowLinkStatus();
   scan_box->Layout();
   if (m_panel3) {
     m_panel3->Layout();
@@ -621,6 +571,12 @@ void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   if(!InitScanner()) {
     return;
   }
+
+  m_link_note = {};
+  m_motors_pending = false;
+  m_link_status_shown.clear();
+  m_scanner->SetLinkLossSettings(m_link_loss_settings);
+  ShowLinkStatus();
 
   double steps_by_peer_pix_x = safeStrToDouble(m_steps_by_per_pix_x_text->GetValue());
   double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue());
@@ -679,7 +635,9 @@ void MyMainWindow::OnRulerPixels(bool along_x, double pixels) {
 }
 
 void MyMainWindow::OnScanStop( wxCommandEvent& event ) {
-  m_scanner->StopScan();
+  if (m_scanner) {
+    m_scanner->StopScan();
+  }
 }
 
 void MyMainWindow::OnSaveFrameAsRGB8bitmap( wxCommandEvent& event ) {
@@ -834,8 +792,18 @@ void MyMainWindow::OnControllerShellCmdInput( wxCommandEvent& event ) {
   // get cmd text
   wxString cmd = m_controller_shell_cmd_text->GetValue();
   if (!cmd.length()) return;
-  // send cmd
-  m_controller->SendAnyCommand(cmd.ToStdString());
+  try {
+    m_controller->SendAnyCommand(cmd.ToStdString());
+  } catch (const LinkLost &) {
+    m_controller_link = LinkPhase::Reconnecting;
+    OnIdleLinkLost(true);
+    ShowLinkStatus();
+    SetStatusText(_("Failed to send"), 2);
+    return;
+  } catch (const std::exception &) {
+    SetStatusText(_("Failed to send"), 2);
+    return;
+  }
   {
     strcpy(controller_shell_last_cmd, cmd.ToStdString().c_str());
     _controller_shell_log(wxT("TX: ") + cmd + wxT("\n"));
@@ -859,8 +827,16 @@ void MyMainWindow::OnOutput0Check( wxCommandEvent& event ) {
   }
   // get new value
   auto value = m_output0_check->GetValue();
-  // send cmd
-  m_controller->LightEnable(value);
+  try {
+    m_controller->LightEnable(value);
+  } catch (const LinkLost &) {
+    m_controller_link = LinkPhase::Reconnecting;
+    OnIdleLinkLost(true);
+    ShowLinkStatus();
+    SetStatusText(_("Failed to send"), 2);
+  } catch (const std::exception &) {
+    SetStatusText(_("Failed to send"), 2);
+  }
 }
 
 void MyMainWindow::OnOutput1Check( wxCommandEvent& event ) {
@@ -917,6 +893,11 @@ void MyMainWindow::OnMotor0GoToPos( wxCommandEvent& event ) {
   try {
     m_controller->GoCameraTo(pos);
     SetStatusText(_("Successfully sent"), 2);
+  } catch (const LinkLost &) {
+    m_controller_link = LinkPhase::Reconnecting;
+    OnIdleLinkLost(true);
+    ShowLinkStatus();
+    SetStatusText(_("Failed to send"), 2);
   } catch (...) {
     SetStatusText(_("Failed to send"), 2);
   }
@@ -1143,7 +1124,23 @@ void MyMainWindow::OnCalculateOffset(wxCommandEvent &event)
     return;
   }
 
-  m_scanner->AutoCalibrateCamera();
+  if (!m_scanner) {
+    return;
+  }
+  try {
+    m_scanner->AutoCalibrateCamera();
+  } catch (const LinkLost &lost) {
+    if (lost.end == LinkEnd::Camera) {
+      m_camera_link = LinkPhase::Reconnecting;
+    }
+    if (lost.end == LinkEnd::Controller) {
+      m_controller_link = LinkPhase::Reconnecting;
+    }
+    OnIdleLinkLost(lost.end == LinkEnd::Controller);
+    ShowLinkStatus();
+  } catch (const std::exception &error) {
+    wxLogError("%s", error.what());
+  }
 }
 
 void MyMainWindow::OnDCMFileOpen(wxCommandEvent& event)
@@ -1427,50 +1424,55 @@ void MyMainWindow::SetupDcmGenerator(){
 
 bool MyMainWindow::InitController()
 {
-  SetStatusText(_("Connecting controller..."), 0);
-
   if(!m_controller){
     m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
                                                 safeStrToInt(m_controller_udp_port_text->GetValue()));
   }
 
   if (!m_controller->IsConnected()) {
-    m_controller->TryConnect();
+    SetStatusText(_("Connecting to controller.."), 0);
+    const bool ok = m_had_controller ? m_controller->Reconnect() : m_controller->TryConnect();
+    if (!ok) {
+      if (m_controller_link == LinkPhase::Up) {
+        m_controller_link = LinkPhase::Reconnecting;
+      }
+      SetStatusText(_("Controller disconnected"), 0);
+      return false;
+    }
   }
 
-  if (m_controller->IsConnected()) {
-    SetStatusText(_("Controller connected"), 0);
-    return true;
-  }
-
-  return false;
+  m_had_controller = true;
+  m_controller_link = LinkPhase::Up;
+  SetStatusText(_("Controller connected"), 0);
+  return true;
 }
 
 bool MyMainWindow::InitCamera()
 {
-  SetStatusText(_("Connecting to camera.."), 1);
-
   if (!m_camera) {
     m_camera = std::make_shared<Camera>();
   }
 
   if(!m_camera->IsConnected()){
-    // SetStatusText(_("Camera disconnected"), 1);
-    m_camera->TryConnect();
+    SetStatusText(_("Connecting to camera.."), 1);
+    if (!m_camera->TryReconnect()) {
+      if (m_camera_link == LinkPhase::Up) {
+        m_camera_link = LinkPhase::Reconnecting;
+      }
+      SetStatusText(_("Camera disconnected"), 1);
+      return false;
+    }
   }
 
-  if( m_camera->IsConnected())
-  {
-    SetStatusText(_("Camera connected"), 1);
-    return true;
-  }
-
-  return false;
+  m_camera_link = LinkPhase::Up;
+  SetStatusText(_("Camera connected"), 1);
+  return true;
 }
 
 bool MyMainWindow::InitScanner()
 {
   if (m_scanner) {
+    m_scanner->SetLinkLossSettings(m_link_loss_settings);
     return true;
   }
 
@@ -1485,8 +1487,205 @@ bool MyMainWindow::InitScanner()
   }
 
   m_scanner = std::make_unique<Scanner>(*m_controller, *m_camera);
+  m_scanner->SetLinkLossSettings(m_link_loss_settings);
 
   return true;
+}
+
+void MyMainWindow::RefreshCameraLink() {
+  if (!m_camera || (m_scanner && m_scanner->IsRunning())) {
+    return;
+  }
+
+  bool up = m_camera->IsConnected() && m_camera->Probe();
+  const LinkEdge dropped = AdvanceLink(m_camera_link, up);
+  m_camera_link = dropped.next;
+  if (dropped.became_lost) {
+    OnIdleLinkLost(false);
+  }
+  if (!up) {
+    up = m_camera->TryReconnect();
+    const LinkEdge again = AdvanceLink(m_camera_link, up);
+    m_camera_link = again.next;
+  }
+}
+
+void MyMainWindow::RefreshControllerLink() {
+  if (m_scanner && m_scanner->IsRunning()) {
+    return;
+  }
+  if (!m_controller) {
+    m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
+                                                safeStrToInt(m_controller_udp_port_text->GetValue()));
+  }
+
+  bool up = m_controller->IsConnected() && m_controller->Probe();
+  const LinkEdge dropped = AdvanceLink(m_controller_link, up);
+  m_controller_link = dropped.next;
+  if (dropped.became_lost) {
+    OnIdleLinkLost(true);
+  }
+  if (!up) {
+    up = m_had_controller ? m_controller->Reconnect() : m_controller->TryConnect();
+    if (up) {
+      m_had_controller = true;
+    }
+    const LinkEdge again = AdvanceLink(m_controller_link, up);
+    m_controller_link = again.next;
+  }
+}
+
+void MyMainWindow::PullScannerLoss() {
+  if (!m_scanner) {
+    return;
+  }
+  const auto report = m_scanner->TakeLinkLoss();
+  if (!report) {
+    return;
+  }
+
+  m_link_note.visible = true;
+  m_link_note.scan_stopped = true;
+  m_link_note.mention_capture = report->mention_capture;
+  m_link_note.motors = report->motors;
+  m_link_note.save_captured = report->save_captured;
+  m_link_note.save_ok = report->save_ok;
+  m_link_note.saved_segments = report->saved_segments;
+  m_motors_pending = !report->motors_commanded;
+  if (report->end == LinkEnd::Camera && m_camera_link == LinkPhase::Up) {
+    m_camera_link = LinkPhase::Reconnecting;
+  }
+  if (report->end == LinkEnd::Controller && m_controller_link == LinkPhase::Up) {
+    m_controller_link = LinkPhase::Reconnecting;
+  }
+}
+
+void MyMainWindow::OnIdleLinkLost(bool controller_down) {
+  if (m_link_note.scan_stopped) {
+    if (controller_down) {
+      m_motors_pending = true;
+    }
+    return;
+  }
+
+  m_link_note.visible = true;
+  m_link_note.scan_stopped = false;
+  m_link_note.motors = m_link_loss_settings.hold_motors ? MotorLossAction::Hold : MotorLossAction::Home;
+  m_link_note.save_captured = m_link_loss_settings.save_captured;
+  m_link_note.mention_capture = false;
+  m_link_note.save_ok = true;
+  m_link_note.saved_segments = 0;
+
+  if (m_scanner && !(m_scanner->IsRunning()) && m_scanner->HasOpenPixels()) {
+    m_link_note.mention_capture = true;
+    const LinkLossResult applied = m_scanner->ApplyCapturePolicy();
+    m_link_note.save_captured = applied.save_captured;
+    m_link_note.save_ok = applied.save_ok;
+    m_link_note.saved_segments = applied.saved_segments;
+    m_link_note.motors = applied.motors;
+  }
+
+  if (controller_down || !m_controller || !m_controller->IsConnected()) {
+    m_motors_pending = true;
+    return;
+  }
+
+  const bool ok = m_link_note.motors == MotorLossAction::Hold ? m_controller->HaltMotors()
+                                                               : m_controller->HomeMotors();
+  m_motors_pending = !ok;
+}
+
+void MyMainWindow::ApplyPendingMotorPlan() {
+  if (!m_motors_pending || (m_scanner && m_scanner->IsRunning())) {
+    return;
+  }
+  if (!m_controller || !m_controller->IsConnected()) {
+    return;
+  }
+  const bool ok = m_link_note.motors == MotorLossAction::Hold ? m_controller->HaltMotors()
+                                                               : m_controller->HomeMotors();
+  if (ok) {
+    m_motors_pending = false;
+  }
+}
+
+void MyMainWindow::ShowLinkStatus() {
+  const std::string english = FormatLinkStatus(m_camera_link, m_controller_link, m_link_note);
+  const wxString text = TranslateLinkText(english);
+  const bool links_up = m_camera_link == LinkPhase::Up && m_controller_link == LinkPhase::Up;
+  if (m_link_status_text) {
+    if (m_link_status_shown != text) {
+      m_link_status_text->SetLabel(text);
+      m_link_status_text->Wrap(640);
+      m_link_status_shown = text;
+      if (wxWindow *parent = m_link_status_text->GetParent()) {
+        parent->Layout();
+      }
+      Layout();
+    }
+    m_link_status_text->SetForegroundColour(links_up ? wxColour(20, 110, 40) : wxColour(176, 32, 32));
+  }
+
+  SetStatusText(TranslateLinkText(CameraLinkPhrase(m_camera_link)), 1);
+  SetStatusText(TranslateLinkText(ControllerLinkPhrase(m_controller_link)), 0);
+  if (!m_link_note.visible) {
+    return;
+  }
+
+  std::string action;
+  if (m_link_note.scan_stopped) {
+    action += "Link lost. Scan stopped. ";
+  }
+  action += m_link_note.motors == MotorLossAction::Hold ? "Motors left in place." : "Motors returning home.";
+  if (m_link_note.mention_capture) {
+    if (!m_link_note.save_captured) {
+      action += " Open scan not saved.";
+    } else if (!m_link_note.save_ok) {
+      action += " Failed to save captured frames.";
+    } else if (m_link_note.saved_segments > 0) {
+      action += " Captured frames kept (" + std::to_string(m_link_note.saved_segments) + ").";
+    } else {
+      action += " Captured frames kept.";
+    }
+  }
+  SetStatusText(TranslateLinkText(action), 2);
+}
+
+void MyMainWindow::OnLinkReconnect(wxCommandEvent &event) {
+  if (m_scanner && m_scanner->IsRunning()) {
+    SetStatusText(_("Scanning.."), 2);
+    return;
+  }
+  if (!m_camera) {
+    m_camera = std::make_shared<Camera>();
+  }
+  RefreshCameraLink();
+  RefreshControllerLink();
+  ApplyPendingMotorPlan();
+  ShowLinkStatus();
+}
+
+wxString MyMainWindow::TranslateLinkText(const std::string &english) {
+  wxString text = wxString::FromUTF8(english.c_str());
+  const char *phrases[] = {
+      "Link lost. Scan stopped.",
+      "Motors returning home.",
+      "Motors left in place.",
+      "Failed to save captured frames.",
+      "Open scan not saved.",
+      "Captured frames kept",
+      "Connecting to camera..",
+      "Connecting to controller..",
+      "Camera disconnected",
+      "Controller disconnected",
+      "Camera connected",
+      "Controller connected",
+  };
+  for (const char *phrase : phrases) {
+    const wxString source = wxString::FromUTF8(phrase);
+    text.Replace(source, _(source), true);
+  }
+  return text;
 }
 
 void MyMainWindow::OnJPGToDCMConvert( wxCommandEvent& event ) {

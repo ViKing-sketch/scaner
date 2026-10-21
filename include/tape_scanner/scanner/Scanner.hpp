@@ -2,11 +2,14 @@
 
 #include "Camera.hpp"
 #include "Controller.hpp"
+#include "LinkLoss.hpp"
 #include "ScanGeometry.hpp"
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <opencv2/core/types.hpp>
 #include <opencv2/opencv.hpp>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -39,6 +42,18 @@ public:
 
     /// Применяется со следующего StartScan. Шаги моторов не меняет.
     void SetScanGeometry(ScanGeometry geometry) { m_geometry = ScanGeometry::Normalized(geometry); }
+
+    /// Читается из settings.ini. По умолчанию моторы остаются на месте, снятое пишется.
+    void SetLinkLossSettings(LinkLossSettings settings) { m_link_loss = settings; }
+
+    std::optional<ScanLinkLoss> TakeLinkLoss();
+    bool HasOpenPixels() const;
+    /// Пишет или сбрасывает открытый холст по settings.ini. Вызывать, когда скан не идёт.
+    LinkLossResult ApplyCapturePolicy();
+
+private:
+    void RecoverFromLinkLoss(const LinkLost &lost);
+    void PublishLinkLoss(const ScanLinkLoss &report);
 
 private:
     void WorkerLoop();
@@ -83,6 +98,9 @@ private:
 
     Controller& m_controller;
     Camera& m_camera;
+    LinkLossSettings m_link_loss;
+    std::mutex m_loss_mu;
+    std::optional<ScanLinkLoss> m_loss;
     std::unique_ptr<ScanSession> m_session;
     ScanGeometry m_geometry;
     std::atomic<bool> m_running = false;

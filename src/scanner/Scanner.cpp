@@ -31,6 +31,10 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
   }
 
     StopScan();
+    {
+        std::lock_guard lock(m_loss_mu);
+        m_loss.reset();
+    }
 
     m_dst_scan_file_path = dst_scan_file_path;
     m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry);
@@ -144,6 +148,7 @@ void Scanner::CalibrateScanner() {
 }
 
 void Scanner::WorkerLoop() {
+  try {
   // if (!wxIsMainThread()) {
   //     wxLogStderr* logTarget = new wxLogStderr();
   //     wxLog::SetThreadActiveTarget(logTarget);
@@ -155,6 +160,7 @@ void Scanner::WorkerLoop() {
     if (m_session) {
       m_session->Finish();
     }
+    m_running = false;
     return;
   }
 
@@ -191,7 +197,69 @@ void Scanner::WorkerLoop() {
   m_running = false;
 
   wxLogMessage("Scan finished");
+  } catch (const LinkLost &error) {
+    RecoverFromLinkLoss(error);
+    m_running = false;
+    wxLogMessage("Scan stopped: link lost");
+  } catch (const std::exception &error) {
+    wxLogError(wxString::Format("Scan stopped: %s", wxString(error.what())));
+    try {
+      m_controller.HaltMotors();
+    } catch (const std::exception &) {
+    }
+    if (m_session) {
+      m_session->Finish();
+    }
+    m_running = false;
+  }
 }
+
+void Scanner::RecoverFromLinkLoss(const LinkLost &lost) {
+  ScanLinkLoss report;
+  report.end = lost.end;
+  report.motors = m_link_loss.hold_motors ? MotorLossAction::Hold : MotorLossAction::Home;
+  report.save_captured = m_link_loss.save_captured;
+  report.mention_capture = true;
+  try {
+    if (lost.end != LinkEnd::Controller && m_controller.IsConnected()) {
+      report.motors_commanded =
+          m_link_loss.hold_motors ? m_controller.HaltMotors() : m_controller.HomeMotors();
+    }
+  } catch (const std::exception &error) {
+    wxLogError(wxString::Format("Link loss motor stop failed: %s", wxString(error.what())));
+  }
+  try {
+    const LinkLossResult applied = ApplyLinkLoss(m_session.get(), m_link_loss);
+    report.save_ok = applied.save_ok;
+    report.saved_segments = applied.saved_segments;
+  } catch (const std::exception &error) {
+    report.save_ok = false;
+    wxLogError(wxString::Format("Link loss save failed: %s", wxString(error.what())));
+  }
+  PublishLinkLoss(report);
+  if (m_light_only_when_capture && m_controller.IsConnected()) {
+    try {
+      m_controller.LightEnable(false);
+    } catch (const std::exception &) {
+    }
+  }
+}
+
+void Scanner::PublishLinkLoss(const ScanLinkLoss &report) {
+  std::lock_guard lock(m_loss_mu);
+  m_loss = report;
+}
+
+std::optional<ScanLinkLoss> Scanner::TakeLinkLoss() {
+  std::lock_guard lock(m_loss_mu);
+  const auto report = m_loss;
+  m_loss.reset();
+  return report;
+}
+
+bool Scanner::HasOpenPixels() const { return m_session && m_session->HasOpenPixels(); }
+
+LinkLossResult Scanner::ApplyCapturePolicy() { return ApplyLinkLoss(m_session.get(), m_link_loss); }
 
 bool Scanner::WaitFilm() {
     while (!HasFilm()) {

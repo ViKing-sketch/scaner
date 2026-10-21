@@ -10,6 +10,7 @@
 #include <tape_scanner/dicom_viewer/DicomProcessor.h>
 #include <tape_scanner/scanner/Controller.hpp>
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/LinkLoss.hpp>
 #include <tape_scanner/scanner/Scanner.hpp>
 #include <memory.h>
 
@@ -106,6 +107,14 @@ private:
   bool InitController();
   bool InitCamera();
   bool InitScanner();
+  void RefreshCameraLink();
+  void RefreshControllerLink();
+  void PullScannerLoss();
+  void OnIdleLinkLost(bool controller_down);
+  void ApplyPendingMotorPlan();
+  void ShowLinkStatus();
+  void OnLinkReconnect(wxCommandEvent &event);
+  wxString TranslateLinkText(const std::string &english);
   wxString get_time_str();
   void _settings_file_update(bool set_status = false);
   void _settings_file_create(bool set_status = false);
@@ -209,5 +218,14 @@ private:
   std::shared_ptr<Controller> m_controller;
   std::shared_ptr<Camera> m_camera;
   std::unique_ptr<Scanner> m_scanner;
+  LinkLossSettings m_link_loss_settings;
+  LinkPhase m_camera_link = LinkPhase::Unknown;
+  LinkPhase m_controller_link = LinkPhase::Unknown;
+  LinkLossNote m_link_note;
+  bool m_motors_pending = false;
+  bool m_had_controller = false;
+  wxStaticText* m_link_status_text = nullptr;
+  wxButton* m_link_reconnect_btn = nullptr;
+  wxString m_link_status_shown;
 
 };
