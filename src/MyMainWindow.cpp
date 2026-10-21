@@ -617,28 +617,35 @@ void MyMainWindow::SetupScanGeometryControls() {
   Layout();
 }
 
+ScanGeometry MyMainWindow::CurrentScanGeometry() const {
+  ScanGeometry geometry;
+  geometry.bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
+  if (m_pixel_um_x_text) {
+    geometry.pixel_um_x = safeStrToDouble(m_pixel_um_x_text->GetValue().ToStdString());
+  }
+  if (m_pixel_um_y_text) {
+    geometry.pixel_um_y = safeStrToDouble(m_pixel_um_y_text->GetValue().ToStdString());
+  }
+  return ScanGeometry::Normalized(geometry);
+}
+
 void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   if(!InitScanner()) {
     return;
   }
 
-  double steps_by_peer_pix_x = safeStrToDouble(m_steps_by_per_pix_x_text->GetValue());
-  double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue());
+  double steps_by_peer_pix_x = safeStrToDouble(m_steps_by_per_pix_x_text->GetValue().ToStdString());
+  double steps_by_peer_pix_y = safeStrToDouble(m_steps_by_per_pix_y_text->GetValue().ToStdString());
   m_scanner->SetStepsByPerPixel(steps_by_peer_pix_x, steps_by_peer_pix_y);
 
-  ScanGeometry geometry;
-  geometry.bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
-  if (m_pixel_um_x_text) {
-    geometry.pixel_um_x = safeStrToDouble(m_pixel_um_x_text->GetValue());
-  }
-  if (m_pixel_um_y_text) {
-    geometry.pixel_um_y = safeStrToDouble(m_pixel_um_y_text->GetValue());
-  }
-  if (!(geometry.pixel_um_x > 0.0) || !(geometry.pixel_um_y > 0.0)) {
+  const double pitch_x =
+      m_pixel_um_x_text ? safeStrToDouble(m_pixel_um_x_text->GetValue().ToStdString()) : kNominalPixelUm;
+  const double pitch_y =
+      m_pixel_um_y_text ? safeStrToDouble(m_pixel_um_y_text->GetValue().ToStdString()) : kNominalPixelUm;
+  if (!(pitch_x > 0.0) || !(pitch_y > 0.0)) {
     wxLogWarning("Pixel pitch must be positive; nominal 21 um is used");
   }
-  geometry = ScanGeometry::Normalized(geometry);
-  m_scanner->SetScanGeometry(geometry);
+  m_scanner->SetScanGeometry(CurrentScanGeometry());
 
   m_scanner->StartScan(m_dst_scan_file_path->GetPath().ToStdString());
 }
@@ -1501,7 +1508,7 @@ void MyMainWindow::OnJPGToDCMConvert( wxCommandEvent& event ) {
   }
   catch( std::runtime_error& error)
   {
-    _log(_(error.what()));
+    _log(wxString(error.what()));
   }
   catch(...)
   {
@@ -1551,139 +1558,32 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
   bool all_frames_as_1st = m_BINAllFramesAs1stFrame->GetValue();
   _log(wxString::Format(_("All frames as 1st frame: %s\n"), all_frames_as_1st ? _("YES") : _("NO")));
 
-  try{
+  const wxString dest_file_path = file_path + ".dcm";
+  try {
     using namespace tape_scanner::dicom_generator;
-    ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
-                    [this](const std::string& msg){ _log(msg); });
-  }
-  catch(...){
-    //TODO
-  }
-  // calculate minimum input file size
-  size_t frame_bin_size = width * height * (bits/8);
-  size_t src_file_size_min = frame_bin_size * frames;
-  _log(wxString::Format(_("Input file minimum size: %zu bytes\n"), src_file_size_min));
-  // setup desitnation file data
-  wxString dest_file_path = file_path + ".dcm";
-  // vars allocation
-  char cstr[256];
-  E_TransferSyntax writeXfer = EXS_LittleEndianImplicit;
-  DcmFileFormat dcm_file;
-  DcmDataset* dataset = dcm_file.getDataset();
-  DcmMetaInfo* metainfo = dcm_file.getMetaInfo();
-  OFCondition condition;
-  ifstream in;
-  size_t frame;
-  bool stop;
-  size_t src_file_size;
-  Uint8 *buf = NULL;
-  do {
-    // open input file
-    in.open(string(file_path.mb_str()), ios::in | ios::binary);
-    if (!in.is_open()) {
-      _log(_("ERROR: Can't open input file for reading.\n"));
-      break;
-    }
-    // get input file size
-    in.seekg(0,ios_base::end);
-    src_file_size = in.tellg();
-    in.seekg(0);
-    _log(wxString::Format(_("Input file size: %zu bytes\n"), src_file_size));
-    if (src_file_size < src_file_size_min) {
-      _log(_("ERROR: Input file size is too small.\n"));
-      break;
-    }
-    // allocate input buffer
-    buf = new Uint8[src_file_size_min];
-    if (!buf) {
-      _log(_("ERROR: Failed to allocate RAM buffer.\n"));
-      break;
-    }
-    // setup general info
-    // see info here - https://dicom.innolitics.com/ciods/
-    metainfo->putAndInsertOFStringArray(DCM_TransferSyntaxUID, UID_LittleEndianImplicitTransferSyntax);
-    // setup general tags
-    dataset->putAndInsertOFStringArray(DCM_SeriesNumber, "1");
-    dataset->putAndInsertOFStringArray(DCM_SeriesDescription, "Converted (BIN/RAW to DICOM)");
-    dataset->putAndInsertOFStringArray(DCM_SeriesInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_SERIES_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_Modality, "XC"); // External-camera Photography
-    dataset->putAndInsertOFStringArray(DCM_ConversionType, "SI"); // Scanned Image
-    dataset->putAndInsertOFStringArray(DCM_PatientName, "BIN^TO^DICOM");
-    dataset->putAndInsertOFStringArray(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_INSTANCE_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_StudyID, dcmGenerateUniqueIdentifier(cstr, SITE_STUDY_UID_ROOT));
-    dataset->putAndInsertOFStringArray(DCM_BurnedInAnnotation, "NO");
-    dataset->putAndInsertOFStringArray(DCM_NominalScannedPixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelAspectRatio, "[1, 1]"); // [row, column]
-    dataset->putAndInsertOFStringArray(DCM_PhotometricInterpretation, "MONOCHROME2");
-    dataset->putAndInsertOFStringArray(DCM_RescaleIntercept, "0");
-    dataset->putAndInsertOFStringArray(DCM_RescaleSlope, "1");
-    dataset->putAndInsertOFStringArray(DCM_RescaleType, "US");
-    dataset->putAndInsertOFStringArray(DCM_PresentationLUTShape, "IDENTITY");
-    dataset->putAndInsertUint16(DCM_SamplesPerPixel, 1);
-    dataset->putAndInsertUint16(DCM_BitsAllocated, bits > 8 ? 16 : 8);
-    dataset->putAndInsertUint16(DCM_BitsStored, bits);
-    dataset->putAndInsertUint16(DCM_HighBit, bits-1);
-    dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
-    dataset->putAndInsertUint16(DCM_Rows, height);
-    dataset->putAndInsertUint16(DCM_Columns, width);
-    // setup multi-frame DICOM file
-    if (frames > 1) {
-      // setup storage
-      dataset->putAndInsertOFStringArray(DCM_SOPClassUID, (bits > 8) ?
-                                                              UID_MultiframeGrayscaleWordSecondaryCaptureImageStorage :
-                                                              UID_MultiframeGrayscaleByteSecondaryCaptureImageStorage);
-      // setup frames
-      OFStandard::snprintf(cstr, 30, "%zu", frames);
-      dataset->putAndInsertOFStringArray(DCM_NumberOfFrames, cstr);
-      dataset->putAndInsertOFStringArray(DCM_FrameTime, "1000");
-      dataset->putAndInsertTagKey(DCM_FrameIncrementPointer, DCM_FrameTime);
-      // if all frames must be a copy of 1st frame
-      if (all_frames_as_1st) {
-        for (stop = false, frame = 0; frame < frames; frame++) {
-          // read input file into buffer
-          in.seekg(0);
-          if (in.read((char *)&buf[frame_bin_size * frame], frame_bin_size).bad()) {
-            _log(_("ERROR: Failed to read input file into RAM buffer.\n"));
-            stop = true;
-            break;
-          }
-        }
-        if (stop) break;
-        // all frames must be unique
-      } else {
-        // read whole input file into buffer
-        if (in.read((char *)buf, src_file_size_min).bad()) {
-          _log(_("ERROR: Failed to read whole input file into RAM buffer.\n"));
-          break;
-        }
+    const ScanGeometry geometry = CurrentScanGeometry();
+    const std::vector<std::string> written =
+        ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
+                        [this](const std::string &msg) { _log(msg); }, dest_file_path.ToStdString(),
+                        geometry.RowSpacingMm(), geometry.ColSpacingMm());
+    wxString names;
+    for (const std::string &path : written) {
+      if (!names.empty()) {
+        names += wxT("\n");
       }
-      // setup single-frame DICOM file
-    } else {
-      // setup storage
-      dataset->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
-      // read whole input file into buffer
-      if (in.read((char *)buf, src_file_size_min).bad()) {
-        _log(_("ERROR: Failed to read whole input file into RAM buffer.\n"));
-        break;
-      }
+      names += wxString::FromUTF8(path);
     }
-    // insert frames binary data
-    dataset->putAndInsertUint8Array(DCM_PixelData, buf, src_file_size_min);
-    // save destination file
-    condition = dcm_file.saveFile((const OFFilename)dest_file_path.mb_str(),
-                                  writeXfer, EET_ExplicitLength, EGL_recalcGL, EPD_noChange,
-                                  OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
-    if (condition.bad()) {
-      _log(_("ERROR: Failed to save resulting DICOM file.\n"));
-      break;
-    }
-  } while (0);
-  // free buffers
-  if (buf) delete [] buf;
-  if (in.is_open()) in.close();
-  // show success message
-  _log(wxString::Format(_("Successfuly converted. See - %s\n"), dest_file_path));
+    _log(wxString::Format(_("Successfuly converted. See - %s\n"), names));
+  }
+  catch (const std::runtime_error &error) {
+    _log(wxString(error.what()));
+  }
+  catch (const std::bad_alloc &) {
+    _log(_("ERROR: Failed to allocate RAM buffer.\n"));
+  }
+  catch (...) {
+    _log(_("ERROR: unexpected error occured when convert bin to dicom"));
+  }
 }
 
 void MyMainWindow::OnDCMCreate( wxCommandEvent& event ) {
@@ -1757,12 +1657,19 @@ void MyMainWindow::OnDCMCreate( wxCommandEvent& event ) {
 
 
   try {
-    tape_scanner::dicom_generator::CreateDcm(file_path.ToStdString(), width, height, bits, frames, fill_value, fill_value_max,
-                                             fill_value_increment, increment_for_new_frames_only);
-
-    _log(wxString::Format(_("Successfuly created. See - %s\n"), file_path));
+    const std::vector<std::string> written = tape_scanner::dicom_generator::CreateDcm(
+        file_path.ToStdString(), width, height, bits, frames, fill_value, fill_value_max, fill_value_increment,
+        increment_for_new_frames_only);
+    wxString names;
+    for (const std::string &path : written) {
+      if (!names.empty()) {
+        names += wxT("\n");
+      }
+      names += wxString::FromUTF8(path);
+    }
+    _log(wxString::Format(_("Successfuly created. See - %s\n"), names));
   } catch (std::runtime_error &e) {
-    _log(_(e.what()));
+    _log(wxString(e.what()));
   }
   catch (std::bad_alloc &e){
     _log(_("ERROR: Failed to allocate RAM buffer.\n"));

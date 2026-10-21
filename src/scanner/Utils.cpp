@@ -278,6 +278,7 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertUint16(DCM_HighBit, 15);
   dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
   dataset->putAndInsertString(DCM_PixelSpacing, spacing.c_str());
+  dataset->putAndInsertString(DCM_ImagerPixelSpacing, spacing.c_str());
   dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
   dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
   dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
