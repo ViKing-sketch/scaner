@@ -30,6 +30,7 @@
 #include <tape_scanner/dicom_generator/DcmCreator.hpp>
 #include <tape_scanner/dicom_generator/BinToDcmConverter.hpp>
 #include <tape_scanner/dicom_generator/JpegToDcmConverter.hpp>
+#include <tape_scanner/scanner/ScannerIdentity.hpp>
 
 #include <tape_scanner/scanner/Utils.hpp>
 
@@ -184,6 +185,14 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   if (!settings.has("scan") || !settings["scan"].has("pixel_um_y")) {
     settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
     update = true;
+  }
+  const char *scanner_identity_keys[] = {"serial",          "acceptance_date", "accepted_by", "manufacturer", "model",
+                                          "station_name",    "institution",     "software_version", "device_id"};
+  for (const char *key : scanner_identity_keys) {
+    if (!settings.has("scanner") || !settings["scanner"].has(key)) {
+      settings["scanner"][key] = "";
+      update = true;
+    }
   }
   m_controller_ip_address_text->SetValue(wxString(settings["controller"]["ip_address"]));
   m_controller_net_mask_text->SetValue(wxString(settings["controller"]["net_mask"]));
@@ -594,7 +603,7 @@ void MyMainWindow::SetupScanGeometryControls() {
                      0, wxEXPAND, 5);
   scan_sizer->Insert(insert_at + 5,
                      new wxStaticText(scan_box, wxID_ANY,
-                                      labelOf(wxT("Pixels are counted on the saved grid; optical pitch divides by bin."))),
+                                      labelOf(wxT("Written pixel spacing is this pitch times bin."))),
                      0, wxALL, 8);
 
   m_pixel_um_x_text->SetValue(wxString(settings["scan"]["pixel_um_x"]));
@@ -639,6 +648,9 @@ void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   }
   geometry = ScanGeometry::Normalized(geometry);
   m_scanner->SetScanGeometry(geometry);
+  m_scanner->SetIdentity(IdentityFromSettings([&](const std::string &section, const std::string &key) {
+    return std::string(settings.get(section).get(key));
+  }));
 
   m_scanner->StartScan(m_dst_scan_file_path->GetPath().ToStdString());
 }
@@ -650,13 +662,12 @@ void MyMainWindow::ApplyRulerPitch(bool along_x) {
   if (!mm_box || !px_box || !dest) {
     return;
   }
-  const int bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
-  double optical_um = 0;
-  if (!OpticalPitchFromSavedGrid(safeStrToDouble(mm_box->GetValue()), safeStrToDouble(px_box->GetValue()), bin, optical_um)) {
+  double pitch_um = 0;
+  if (!PitchUmFromRuler(safeStrToDouble(mm_box->GetValue()), safeStrToDouble(px_box->GetValue()), pitch_um)) {
     wxLogWarning("Ruler distance and pixel count must be positive");
     return;
   }
-  dest->SetValue(wxString::FromUTF8(FormatPitchUm(optical_um, 1)));
+  dest->SetValue(wxString::FromUTF8(FormatPitchUm(pitch_um, 1)));
 }
 
 void MyMainWindow::OnRulerPixels(bool along_x, double pixels) {

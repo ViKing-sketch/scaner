@@ -3,8 +3,10 @@
 #include "Camera.hpp"
 #include "Controller.hpp"
 #include "ScanGeometry.hpp"
+#include "ScannerIdentity.hpp"
 #include <atomic>
 #include <memory>
+#include <utility>
 #include <opencv2/core/types.hpp>
 #include <opencv2/opencv.hpp>
 #include <thread>
@@ -39,6 +41,9 @@ public:
 
     /// Применяется со следующего StartScan. Шаги моторов не меняет.
     void SetScanGeometry(ScanGeometry geometry) { m_geometry = ScanGeometry::Normalized(geometry); }
+
+    /// Паспорт из настроек. Пишется в каждый DICOM этого скана.
+    void SetIdentity(ScannerIdentity identity) { m_identity = std::move(identity); }
 
 private:
     void WorkerLoop();
@@ -85,6 +90,7 @@ private:
     Camera& m_camera;
     std::unique_ptr<ScanSession> m_session;
     ScanGeometry m_geometry;
+    ScannerIdentity m_identity;
     std::atomic<bool> m_running = false;
     bool m_foce_canceled_unsafe = false;
     int m_cur_camera_pos = -1;

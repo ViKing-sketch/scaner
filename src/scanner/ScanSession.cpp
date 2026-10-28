@@ -30,9 +30,11 @@ std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_nu
   return stem + suffix + ext;
 }
 
-ScanSession::ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows)
+ScanSession::ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows,
+                         ScannerIdentity identity)
     : m_chosen_path(std::move(chosen_path)), m_geometry(ScanGeometry::Normalized(geometry)),
-      m_study_uid(MakeUid(SITE_STUDY_UID_ROOT)), m_series_uid(MakeUid(SITE_SERIES_UID_ROOT)),
+      m_identity(std::move(identity)), m_study_uid(MakeUid(SITE_STUDY_UID_ROOT)),
+      m_series_uid(MakeUid(SITE_SERIES_UID_ROOT)),
       m_max_rows(max_segment_rows > 0 ? max_segment_rows : kMaxDicomDimension) {}
 
 bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
@@ -114,9 +116,10 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
   params.study_instance_uid = m_study_uid;
   params.series_instance_uid = m_series_uid;
   params.instance_number = m_next_instance;
-  params.pixel_spacing_row_mm = m_geometry.RowSpacingMm();
-  params.pixel_spacing_col_mm = m_geometry.ColSpacingMm();
-  params.image_position_row_mm = static_cast<double>(m_y_origin) * m_geometry.RowSpacingMm();
+  params.pixel_spacing_row_mm = RowSpacingMm();
+  params.pixel_spacing_col_mm = ColSpacingMm();
+  params.image_position_row_mm = static_cast<double>(m_y_origin) * RowSpacingMm();
+  params.identity = m_identity;
 
   const std::string path = MakeDicomSegmentPath(m_chosen_path, m_next_instance);
   if (!saveToDcm(image, path, params)) {

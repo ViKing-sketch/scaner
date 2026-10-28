@@ -33,7 +33,7 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
     StopScan();
 
     m_dst_scan_file_path = dst_scan_file_path;
-    m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry);
+    m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry, kMaxDicomDimension, m_identity);
     m_running = true;
     m_foce_canceled_unsafe = false;
     m_cur_dir = -1;
