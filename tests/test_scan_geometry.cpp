@@ -18,7 +18,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -698,10 +700,12 @@ void TestSingleSavePathSpacing() {
   }
   const std::string converted = (dir / "converted.dcm").string();
   const auto converted_paths = tape_scanner::dicom_generator::ConvertBinToDcm(
-      raw_path, 2, 2, 16, 1, false, [](const std::string &) {}, converted);
+      raw_path, 2, 2, 16, 1, false, [](const std::string &) {}, 0.021, 0.025, converted);
   CHECK(converted_paths.size() == 1);
   CHECK(converted_paths[0] == converted);
-  CheckBothSpacingTags(converted, 0.042, 0.042);
+  CheckBothSpacingTags(converted, 0.021, 0.025);
+  CHECK(!Near(0.021, 0.042));
+  CHECK(!ReadImageScalePassport(converted).present);
   cv::Mat converted_pixels;
   CHECK(LoadPixels(converted, converted_pixels));
   CHECK(converted_pixels.at<uint16_t>(0, 0) == 1);
@@ -721,7 +725,7 @@ void TestSingleSavePathSpacing() {
   }
   const std::string fine_first = (dir / "fine.dcm").string();
   const auto fine_paths = tape_scanner::dicom_generator::ConvertBinToDcm(
-      raw_fine, 2, 2, 16, 2, false, [](const std::string &) {}, fine_first, fine.RowSpacingMm(), fine.ColSpacingMm());
+      raw_fine, 2, 2, 16, 2, false, [](const std::string &) {}, fine.RowSpacingMm(), fine.ColSpacingMm(), fine_first);
   CHECK(fine_paths.size() == 2);
   CHECK(fine_paths[0] == fine_first);
   const std::string fine_second = (dir / "fine_002.dcm").string();
@@ -737,9 +741,10 @@ void TestSingleSavePathSpacing() {
     raw.write(reinterpret_cast<const char *>(pixels), sizeof(pixels));
   }
   const std::string converted8 = (dir / "converted8.dcm").string();
-  tape_scanner::dicom_generator::ConvertBinToDcm(raw8_path, 2, 2, 8, 1, false, [](const std::string &) {},
-                                                 converted8);
-  CheckBothSpacingTags(converted8, 0.042, 0.042);
+  tape_scanner::dicom_generator::ConvertBinToDcm(raw8_path, 2, 2, 8, 1, false, [](const std::string &) {}, 0.030,
+                                                 0.030, converted8);
+  CheckBothSpacingTags(converted8, 0.030, 0.030);
+  CHECK(!Near(0.030, 0.042));
   cv::Mat converted8_pixels;
   CHECK(LoadPixels(converted8, converted8_pixels));
   CHECK(converted8_pixels.at<uint16_t>(0, 0) == 10);
@@ -758,6 +763,187 @@ void TestSingleSavePathSpacing() {
   std::filesystem::remove_all(dir);
 }
 
+bool ThrowsRuntime(const std::function<void()> &fn) {
+  try {
+    fn();
+  } catch (const std::runtime_error &) {
+    return true;
+  } catch (...) {
+    return false;
+  }
+  return false;
+}
+
+void WriteBytes(const std::filesystem::path &path, const void *data, size_t size) {
+  std::ofstream raw(path, std::ios::binary);
+  raw.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
+}
+
+void TestBinImport() {
+  const auto dir = std::filesystem::temp_directory_path() / "tape_scanner_bin_import";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const auto log = [](const std::string &) {};
+
+  const auto odd_path = dir / "odd.bin";
+  const uint8_t odd[3] = {200, 10, 11};
+  WriteBytes(odd_path, odd, sizeof(odd));
+  const auto odd_dcm = (dir / "odd.dcm").string();
+  const auto odd_written = tape_scanner::dicom_generator::ConvertBinToDcm(
+      odd_path.string(), 3, 1, 8, 1, false, log, 0.017, 0.019, odd_dcm);
+  CHECK(odd_written.size() == 1);
+  CheckBothSpacingTags(odd_dcm, 0.017, 0.019);
+  CHECK(!Near(0.017, 0.042));
+  cv::Mat odd_pixels;
+  CHECK(LoadPixels(odd_dcm, odd_pixels));
+  CHECK(odd_pixels.cols == 3);
+  CHECK(odd_pixels.at<uint16_t>(0, 0) == 200);
+  CHECK(odd_pixels.at<uint16_t>(0, 2) == 11);
+  CHECK(!ReadImageScalePassport(odd_dcm).present);
+
+  const auto one = dir / "one.bin";
+  const uint8_t pixel = 7;
+  WriteBytes(one, &pixel, 1);
+  const auto copy_a = (dir / "copies.dcm").string();
+  const auto copies = tape_scanner::dicom_generator::ConvertBinToDcm(one.string(), 1, 1, 8, 2, true, log, 0.021, 0.021,
+                                                                      copy_a);
+  CHECK(copies.size() == 2);
+  CHECK(copies[1] == (dir / "copies_002.dcm").string());
+  cv::Mat copy_pixels;
+  CHECK(LoadPixels(copies[1], copy_pixels));
+  CHECK(copy_pixels.at<uint16_t>(0, 0) == 7);
+
+  const auto short_path = dir / "short.bin";
+  WriteBytes(short_path, odd, 2);
+  const auto short_dcm = (dir / "short.dcm").string();
+  CHECK(ThrowsRuntime([&] {
+    tape_scanner::dicom_generator::ConvertBinToDcm(short_path.string(), 3, 1, 8, 1, false, log, 0.021, 0.021, short_dcm);
+  }));
+  CHECK(!std::filesystem::exists(short_dcm));
+
+  const auto long_path = dir / "long.bin";
+  const uint8_t extra[4] = {1, 2, 3, 4};
+  WriteBytes(long_path, extra, sizeof(extra));
+  const auto long_dcm = (dir / "long.dcm").string();
+  CHECK(ThrowsRuntime([&] {
+    tape_scanner::dicom_generator::ConvertBinToDcm(long_path.string(), 3, 1, 8, 1, false, log, 0.021, 0.021, long_dcm);
+  }));
+  CHECK(!std::filesystem::exists(long_dcm));
+
+  CHECK(ThrowsRuntime([&] {
+    tape_scanner::dicom_generator::ConvertBinToDcm(one.string(), 1, 1, 12, 1, false, log, 0.021, 0.021,
+                                                   (dir / "bits.dcm").string());
+  }));
+  CHECK(ThrowsRuntime([&] {
+    tape_scanner::dicom_generator::ConvertBinToDcm(one.string(), std::numeric_limits<size_t>::max(), 2, 8, 1, false, log,
+                                                   0.021, 0.021, (dir / "overflow.dcm").string());
+  }));
+  CHECK(ThrowsRuntime([&] {
+    tape_scanner::dicom_generator::ConvertBinToDcm(one.string(), 1, 1, 8, 1, false, log,
+                                                   std::numeric_limits<double>::quiet_NaN(), 0.021,
+                                                   (dir / "nan.dcm").string());
+  }));
+  CHECK(!std::filesystem::exists(dir / "nan.dcm"));
+
+  const auto missing = (dir / "missing" / "out.dcm").string();
+  CHECK(ThrowsRuntime(
+      [&] { tape_scanner::dicom_generator::ConvertBinToDcm(one.string(), 1, 1, 8, 1, false, log, 0.021, 0.021, missing); }));
+  CHECK(!std::filesystem::exists(missing));
+
+  std::filesystem::remove_all(dir);
+}
+
+void TestRulerBinFromImage() {
+  CHECK(SavedPitchCaption(kNominalPixelUm, 2, false) == "42 nominal");
+  CHECK(SavedPitchCaption(kNominalPixelUm, 1, true) == "21");
+  CHECK(kNominalPixelUm == 21.0);
+
+  const RulerBinChoice from_file = ChooseRulerBin(2, 1);
+  CHECK(from_file.ok);
+  CHECK(from_file.bin == 2);
+  CHECK(from_file.source == RulerBinSource::ImagePassport);
+  const RulerBinChoice other_file = ChooseRulerBin(1, 2);
+  CHECK(other_file.bin == 1);
+  CHECK(other_file.source == RulerBinSource::ImagePassport);
+
+  double optical = 0;
+  double doubled = 0;
+  CHECK(RulerOpticalPitch(10.0, 238.0, from_file.bin, optical));
+  CHECK(RulerOpticalPitch(10.0, 238.0, 1, doubled));
+  CHECK(Near(doubled, optical * 2.0));
+  CHECK(Near(optical, 10.0 / (238.0 * 2.0) * 1000.0));
+
+  const RulerBinChoice missing = ChooseRulerBin(0, 0);
+  CHECK(!missing.ok);
+  const RulerBinChoice typed = ChooseRulerBin(0, 2);
+  CHECK(typed.ok);
+  CHECK(typed.bin == 2);
+  CHECK(typed.source == RulerBinSource::ExplicitUser);
+  CHECK(ChooseRulerBin(3, 0).ok == false);
+
+  double kept = 7;
+  CHECK(!RulerOpticalPitch(std::numeric_limits<double>::quiet_NaN(), 10.0, 1, kept));
+  CHECK(!RulerOpticalPitch(1000.0, 1.0, 1, kept));
+  CHECK(kept == 7);
+
+  const auto dir = std::filesystem::temp_directory_path() / "tape_scanner_ruler_bin";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  cv::Mat sample(4, 6, CV_16UC1, cv::Scalar(1));
+
+  DicomWriteParams coarse;
+  coarse.pixel_spacing_row_mm = 0.042;
+  coarse.pixel_spacing_col_mm = 0.042;
+  coarse.bin = 2;
+  const std::string coarse_path = (dir / "coarse.dcm").string();
+  CHECK(saveToDcm(sample, coarse_path, coarse));
+  const ImageScalePassport coarse_passport = ReadImageScalePassport(coarse_path);
+  CHECK(coarse_passport.present);
+  CHECK(coarse_passport.bin == 2);
+  CHECK(coarse_passport.plane == "film");
+  CHECK(coarse_passport.roi == "0\\0\\6\\4");
+  CHECK(coarse_passport.rotation_deg == 0);
+  CHECK(coarse_passport.flip == 0);
+
+  DicomWriteParams fine;
+  fine.pixel_spacing_row_mm = 0.042;
+  fine.pixel_spacing_col_mm = 0.042;
+  fine.bin = 1;
+  fine.rotation_deg = 90;
+  fine.flip = 1;
+  const std::string fine_path = (dir / "fine.dcm").string();
+  CHECK(saveToDcm(sample, fine_path, fine));
+  const ImageScalePassport fine_passport = ReadImageScalePassport(fine_path);
+  CHECK(fine_passport.bin == 1);
+  CHECK(fine_passport.rotation_deg == 90);
+  CHECK(fine_passport.flip == 1);
+  CHECK(ChooseRulerBin(ReadImageScalePassport(coarse_path).bin, 1).bin == 2);
+  CHECK(ChooseRulerBin(fine_passport.bin, 2).bin == 1);
+
+  DicomWriteParams bare;
+  bare.pixel_spacing_row_mm = 0.042;
+  bare.pixel_spacing_col_mm = 0.042;
+  const std::string bare_path = (dir / "bare.dcm").string();
+  CHECK(saveToDcm(sample, bare_path, bare));
+  const ImageScalePassport bare_passport = ReadImageScalePassport(bare_path);
+  CHECK(!bare_passport.present);
+  CHECK(bare_passport.bin == 0);
+  CHECK(!ChooseRulerBin(bare_passport.bin, 0).ok);
+
+  ScanGeometry geometry;
+  geometry.bin = 2;
+  geometry.pixel_um_x = 21.0;
+  geometry.pixel_um_y = 21.0;
+  ScanSession session((dir / "roll.dcm").string(), geometry, 100);
+  CHECK(session.PushRegion(sample.clone(), 0, 0));
+  CHECK(session.Finish());
+  CHECK(session.SavedSegmentCount() == 1);
+  CHECK(!session.SavedPaths().empty());
+  CHECK(ReadImageScalePassport(session.SavedPaths().front()).bin == 2);
+
+  std::filesystem::remove_all(dir);
+}
+
 } // namespace
 
 int main() {
@@ -769,6 +955,8 @@ int main() {
   TestWindowLevel();
   TestRulerPitch();
   TestSingleSavePathSpacing();
+  TestBinImport();
+  TestRulerBinFromImage();
 
   if (g_failures != 0) {
     std::cerr << g_failures << " check(s) failed\n";

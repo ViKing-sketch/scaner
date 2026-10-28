@@ -2,6 +2,7 @@
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <cmath>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
@@ -227,8 +228,9 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
     std::cerr << "Ошибка: Rows/Columns больше предела одного DICOM-кадра" << std::endl;
     return false;
   }
-  if (!(params.pixel_spacing_row_mm > 0.0) || !(params.pixel_spacing_col_mm > 0.0)) {
-    std::cerr << "Ошибка: Pixel Spacing должен быть положительным" << std::endl;
+  if (!std::isfinite(params.pixel_spacing_row_mm) || !(params.pixel_spacing_row_mm > 0.0) ||
+      !std::isfinite(params.pixel_spacing_col_mm) || !(params.pixel_spacing_col_mm > 0.0)) {
+    std::cerr << "Ошибка: Pixel Spacing должен быть положительным и конечным" << std::endl;
     return false;
   }
   if (params.instance_number < 1) {
@@ -282,6 +284,18 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
   dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
   dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
+
+  if (params.bin == 1 || params.bin == 2) {
+    const std::string plane = params.plane.empty() ? "film" : params.plane;
+    const std::string roi = params.roi.empty() ? (std::string("0\\0\\") + std::to_string(cols) + "\\" + std::to_string(rows))
+                                               : params.roi;
+    const std::string transform = std::to_string(params.rotation_deg) + "\\" + std::to_string(params.flip);
+    dataset->putAndInsertString(DcmTag(0x0019, 0x0010, EVR_LO), "SCANER");
+    dataset->putAndInsertString(DcmTag(0x0019, 0x1001, EVR_IS), params.bin == 1 ? "1" : "2");
+    dataset->putAndInsertString(DcmTag(0x0019, 0x1002, EVR_LO), plane.c_str());
+    dataset->putAndInsertString(DcmTag(0x0019, 0x1003, EVR_LO), roi.c_str());
+    dataset->putAndInsertString(DcmTag(0x0019, 0x1004, EVR_LO), transform.c_str());
+  }
 
   const size_t pixel_count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
   OFCondition status = dataset->putAndInsertUint16Array(

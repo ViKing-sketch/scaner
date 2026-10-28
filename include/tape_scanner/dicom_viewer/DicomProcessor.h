@@ -26,6 +26,7 @@ public:
     size_t GetFrameHeight(){ return m_dcm ? m_dcm->getHeight() : 0; }
     size_t GetFrameWidth(){ return m_dcm ? m_dcm->getWidth() : 0; }
     int GetCurFrameNum() const { return m_series.size() > 1 ? m_series_index : m_cur_frame; }
+    const std::string &CurrentImagePath() const { return m_current_path; }
 private:
     GLImgViewer& m_gl_viewer;
     std::unique_ptr<DicomImage> m_dcm;

@@ -117,6 +117,8 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
   params.pixel_spacing_row_mm = m_geometry.RowSpacingMm();
   params.pixel_spacing_col_mm = m_geometry.ColSpacingMm();
   params.image_position_row_mm = static_cast<double>(m_y_origin) * m_geometry.RowSpacingMm();
+  params.bin = m_geometry.bin;
+  params.plane = "film";
 
   const std::string path = MakeDicomSegmentPath(m_chosen_path, m_next_instance);
   if (!saveToDcm(image, path, params)) {

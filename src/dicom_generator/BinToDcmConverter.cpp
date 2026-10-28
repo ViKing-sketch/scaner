@@ -1,6 +1,9 @@
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -8,6 +11,7 @@
 #include <opencv2/core.hpp>
 
 #include <tape_scanner/dicom_generator/BinToDcmConverter.hpp>
+#include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 
 namespace tape_scanner::dicom_generator {
@@ -15,6 +19,14 @@ namespace tape_scanner::dicom_generator {
 using std::runtime_error;
 
 namespace {
+
+bool MultiplySizes(size_t a, size_t b, size_t &product) {
+  if (a != 0 && b > std::numeric_limits<size_t>::max() / a) {
+    return false;
+  }
+  product = a * b;
+  return true;
+}
 
 std::string FramePath(const std::string &path, size_t instance) {
   if (instance <= 1) {
@@ -46,23 +58,46 @@ cv::Mat PixelsToMat(const uint8_t *bytes, size_t width, size_t height, size_t bi
   return image;
 }
 
+bool ReadExact(std::ifstream &in, char *dst, size_t count) {
+  in.read(dst, static_cast<std::streamsize>(count));
+  return static_cast<size_t>(in.gcount()) == count;
+}
+
 } // namespace
 
 std::vector<std::string> ConvertBinToDcm(string in_bin_file_path, size_t width, size_t height, size_t bits,
-                                             size_t frames, bool all_frames_as_1st,
-                                             std::function<void(const string &msg)> log_callback,
-                                             string_opt out_dcm_file_path, double pixel_spacing_row_mm,
-                                             double pixel_spacing_col_mm) {
+                                         size_t frames, bool all_frames_as_1st,
+                                         std::function<void(const string &msg)> log_callback,
+                                         double pixel_spacing_row_mm, double pixel_spacing_col_mm,
+                                         string_opt out_dcm_file_path) {
+  if (!std::isfinite(pixel_spacing_row_mm) || !(pixel_spacing_row_mm > 0.0) ||
+      !std::isfinite(pixel_spacing_col_mm) || !(pixel_spacing_col_mm > 0.0)) {
+    throw runtime_error("ERROR: pixel spacing must be a positive finite parameter, in millimetres.\n");
+  }
   if (bits != 8 && bits != 16) {
     throw runtime_error("ERROR: only 8 or 16 bits per pixel.\n");
   }
-  if (!width || !height || !frames) {
+  if (width == 0 || height == 0 || frames == 0) {
     throw runtime_error("ERROR: width, height and frames must be positive.\n");
   }
+  if (width > static_cast<size_t>(kMaxDicomDimension) || height > static_cast<size_t>(kMaxDicomDimension) ||
+      frames > static_cast<size_t>(UINT16_MAX)) {
+    throw runtime_error("ERROR: width, height or frame count is outside the DICOM frame limit.\n");
+  }
 
-  const size_t frame_bin_size = width * height * (bits / 8);
-  const size_t src_file_size_min = frame_bin_size * frames;
-  log_callback(std::format("Input file minimum size: {} bytes\n", src_file_size_min));
+  const size_t bytes_per_pixel = bits / 8;
+  size_t pixels = 0;
+  size_t frame_bin_size = 0;
+  size_t stored_bytes = 0;
+  if (!MultiplySizes(width, height, pixels) || !MultiplySizes(pixels, bytes_per_pixel, frame_bin_size) ||
+      !MultiplySizes(frame_bin_size, frames, stored_bytes)) {
+    throw runtime_error("ERROR: width, height and frame count overflow.\n");
+  }
+  // «Все кадры как первый» копирует один кадр. На диске должна лежать ровно одна рамка.
+  const size_t expected_file_bytes = all_frames_as_1st ? frame_bin_size : stored_bytes;
+
+  log_callback(std::format("Pixel spacing parameter: {}\\{} mm\n", pixel_spacing_row_mm, pixel_spacing_col_mm));
+  log_callback(std::format("Expected input size: {} bytes\n", expected_file_bytes));
 
   const string dest_file_path = out_dcm_file_path.value_or(in_bin_file_path + ".dcm");
 
@@ -71,29 +106,33 @@ std::vector<std::string> ConvertBinToDcm(string in_bin_file_path, size_t width, 
     throw runtime_error("ERROR: Can't open input file for reading.\n");
   }
 
-  in.seekg(0, std::ios_base::end);
-  const auto src_file_size = static_cast<size_t>(in.tellg());
+  in.seekg(0, std::ios::end);
+  const std::streamoff end = in.tellg();
+  if (end < 0) {
+    throw runtime_error("ERROR: short read, input size is unknown.\n");
+  }
+  const auto src_file_size = static_cast<size_t>(end);
   in.seekg(0);
   log_callback(std::format("Input file size: {} bytes\n", src_file_size));
-  if (src_file_size < src_file_size_min) {
-    throw runtime_error("ERROR: Input file size is too small.\n");
+  if (src_file_size < expected_file_bytes) {
+    throw runtime_error("ERROR: short read, input file is smaller than the declared frame.\n");
+  }
+  if (src_file_size != expected_file_bytes) {
+    throw runtime_error("ERROR: input file byte count does not match width, height, bit depth and frames.\n");
   }
 
-  std::vector<uint8_t> buf(src_file_size_min);
+  std::vector<uint8_t> buf(stored_bytes);
   if (all_frames_as_1st) {
     for (size_t frame = 0; frame < frames; ++frame) {
       in.seekg(0);
-      if (in.read(reinterpret_cast<char *>(buf.data() + frame_bin_size * frame),
-                  static_cast<std::streamsize>(frame_bin_size))
-              .bad()) {
-        throw runtime_error("ERROR: Failed to read input file into RAM buffer.\n");
+      if (!ReadExact(in, reinterpret_cast<char *>(buf.data() + frame_bin_size * frame), frame_bin_size)) {
+        throw runtime_error("ERROR: short read while copying the first frame.\n");
       }
     }
-  } else if (in.read(reinterpret_cast<char *>(buf.data()), static_cast<std::streamsize>(src_file_size_min)).bad()) {
-    throw runtime_error("ERROR: Failed to read whole input file into RAM buffer.\n");
+  } else if (!ReadExact(in, reinterpret_cast<char *>(buf.data()), stored_bytes)) {
+    throw runtime_error("ERROR: short read while loading the input file.\n");
   }
 
-  // Единственная запись DICOM — saveToDcm. Шаг приходит от вызывающего кода.
   DicomWriteParams params;
   char study_uid[100];
   char series_uid[100];

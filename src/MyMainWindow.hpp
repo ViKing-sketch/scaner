@@ -104,6 +104,9 @@ private:
   ScanGeometry CurrentScanGeometry() const;
   void ApplyRulerPitch(bool along_x);
   void OnRulerPixels(bool along_x, double pixels);
+  void RefreshOpenPassport();
+  void UpdateRulerSourceLabel();
+  int ExplicitRulerBin() const;
   bool InitController();
   bool InitCamera();
   bool InitScanner();
@@ -186,6 +189,11 @@ private:
   wxTextCtrl* m_ruler_px_y = nullptr;
   wxToggleButton* m_pick_x_btn = nullptr;
   wxToggleButton* m_pick_y_btn = nullptr;
+  wxChoice* m_ruler_bin_choice = nullptr;
+  wxStaticText* m_ruler_source_text = nullptr;
+  ImageScalePassport m_open_passport;
+  bool m_pitch_from_ruler_x = false;
+  bool m_pitch_from_ruler_y = false;
   bool m_updating_scan_mode = false;
   bool m_updating_ruler = false;
   // opened file data
