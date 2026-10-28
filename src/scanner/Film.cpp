@@ -17,13 +17,17 @@ void PasteRowsBelow(Region &dest, const Region &stripe) {
         return;
     }
     cv::Mat rows = stripe.GetMat().rowRange(row0, stripe.GetMat().rows).clone();
-    Region piece(stripe_rect.x, stripe_rect.y + row0, rows);
+    cv::Mat coverage;
+    if (stripe.Valid().rows == stripe.GetMat().rows && stripe.Valid().cols == stripe.GetMat().cols) {
+        coverage = stripe.Valid().rowRange(row0, stripe.Valid().rows).clone();
+    }
+    Region piece(stripe_rect.x, stripe_rect.y + row0, rows, coverage);
     dest.InsertRegion(piece);
 }
 
 } // namespace
 
-void Film::PushRegion(cv::Mat img, int x, int y) {
+void Film::PushRegion(cv::Mat img, int x, int y, cv::Mat coverage) {
     ScanLogMessageF("Film: Pushed x:%i, y:%i, w:%i, h:%i", x, y, img.cols, img.rows);
     bool need_new_stripe =
         m_cur_stripe.GetRect().area() && y != m_cur_stripe.GetRect().y;
@@ -39,7 +43,7 @@ void Film::PushRegion(cv::Mat img, int x, int y) {
     }
 
     m_cur_region_num++;
-    m_cur_stripe.InsertRegion({x, 0, img});
+    m_cur_stripe.InsertRegion(Region(x, 0, img, coverage));
 }
 
 bool Film::HasOpenStripe() const {
@@ -83,7 +87,7 @@ cv::Mat Film::GetMat() {
     return m_all_stripes.GetMat();
 }
 
-cv::Mat Film::Render() const {
+CoveredFrame Film::RenderCovered() const {
     Region canvas = m_all_stripes.Clone();
     if (m_cur_stripe.GetRect().area() > 0) {
         try {
@@ -96,7 +100,23 @@ cv::Mat Film::Render() const {
             }
         }
     }
-    return canvas.GetMat().clone();
+
+    CoveredFrame frame;
+    frame.image = canvas.GetMat().clone();
+    frame.coverage = canvas.Valid().clone();
+    if (frame.coverage.type() != CV_8UC1 || frame.coverage.size() != frame.image.size()) {
+        frame.coverage = cv::Mat(frame.image.rows, frame.image.cols, CV_8UC1, cv::Scalar(kCoverageUnfilled));
+    }
+    frame.stats = IntensityOnCoverage(frame.image, frame.coverage);
+    frame.complete = frame.stats.available && frame.stats.invalid_count == 0;
+    if (!frame.image.empty() && !frame.complete) {
+        frame.gap_reason = kCoverageGapUnfilled;
+    }
+    return frame;
+}
+
+cv::Mat Film::Render() const {
+    return RenderCovered().image;
 }
 
 void Film::Reset() {

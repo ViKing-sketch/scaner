@@ -14,6 +14,7 @@ endif()
 
 add_library(tape_scanner_scan STATIC
     src/scanner/Utils.cpp
+    src/scanner/Coverage.cpp
     src/scanner/Film.cpp
     src/scanner/Region.cpp
     src/scanner/ScanSession.cpp
@@ -43,6 +44,15 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+# Маска покрытия: sidecar, статистика, короткая полоса и хвост после разреза.
+# Собирается с ядром скана и не линкует wxWidgets или SDK камеры.
+add_executable(test_coverage tests/test_coverage.cpp)
+target_link_libraries(test_coverage PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_coverage PRIVATE /utf-8)
+endif()
+add_test(NAME test_coverage COMMAND test_coverage)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
@@ -159,5 +169,5 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
 else()
     message(STATUS
         "UI scanner target is skipped: wxWidgets, OpenGL, glm or the camera SDK is missing. "
-        "test_scan_geometry still builds and does not need the scanner to be connected.")
+        "test_scan_geometry and test_coverage still build and do not need the scanner to be connected.")
 endif()

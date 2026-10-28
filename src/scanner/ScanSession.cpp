@@ -1,3 +1,4 @@
+#include <tape_scanner/scanner/Coverage.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 
@@ -103,10 +104,14 @@ bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
 
 bool ScanSession::Finish() { return Flush(); }
 
-bool ScanSession::WriteSegment(const cv::Mat &image) {
+bool ScanSession::WriteSegment(const cv::Mat &image, const cv::Mat &coverage) {
   if (image.empty() || image.rows > m_max_rows || image.cols > kMaxDicomDimension ||
       image.rows > kMaxDicomDimension) {
     ScanLogError("ScanSession: segment is empty or larger than one DICOM frame");
+    return false;
+  }
+  if (coverage.type() != CV_8UC1 || coverage.size() != image.size()) {
+    ScanLogError("ScanSession: coverage mask does not match the segment");
     return false;
   }
 
@@ -124,6 +129,25 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
     return false;
   }
 
+  const IntensityStats stats = IntensityOnCoverage(image, coverage);
+  const bool complete = stats.available && stats.invalid_count == 0;
+  const std::string gap_reason = complete ? std::string() : std::string(kCoverageGapUnfilled);
+  const std::string mask_path = CoverageMaskPath(path);
+  if (!WriteCoverageMask(mask_path, coverage, gap_reason)) {
+    ScanLogError("ScanSession: failed to save " + mask_path);
+    return false;
+  }
+
+  SavedSegmentCoverage saved;
+  saved.dicom_path = path;
+  saved.mask_path = mask_path;
+  saved.rows = image.rows;
+  saved.cols = image.cols;
+  saved.complete = complete;
+  saved.gap_reason = gap_reason;
+  saved.stats = stats;
+  m_coverage.push_back(std::move(saved));
+
   ScanLogMessageF("ScanSession: saved %s (%ix%i), instance %i", path.c_str(), image.cols, image.rows,
                   m_next_instance);
   m_paths.push_back(path);
@@ -138,18 +162,22 @@ bool ScanSession::CommitSplit() {
     return true;
   }
 
-  cv::Mat image = m_film.Render();
-  if (image.empty() || m_split_at <= 0 || m_split_at > image.rows) {
+  const CoveredFrame frame = m_film.RenderCovered();
+  const cv::Mat &image = frame.image;
+  if (image.empty() || frame.coverage.size() != image.size() || m_split_at <= 0 || m_split_at > image.rows) {
     ScanLogError("ScanSession: split row is outside the rendered segment");
     return false;
   }
 
   cv::Mat head = image.rowRange(0, m_split_at).clone();
+  cv::Mat head_coverage = frame.coverage.rowRange(0, m_split_at).clone();
   cv::Mat tail;
+  cv::Mat tail_coverage;
   if (m_split_at < image.rows) {
     tail = image.rowRange(m_split_at, image.rows).clone();
+    tail_coverage = frame.coverage.rowRange(m_split_at, image.rows).clone();
   }
-  if (!WriteSegment(head)) {
+  if (!WriteSegment(head, head_coverage)) {
     return false;
   }
 
@@ -158,7 +186,7 @@ bool ScanSession::CommitSplit() {
   m_open_abs_y = -1;
   if (!tail.empty()) {
     try {
-      m_film.PushRegion(std::move(tail), 0, 0);
+      m_film.PushRegion(std::move(tail), 0, 0, std::move(tail_coverage));
     } catch (const std::exception &e) {
       ScanLogError(std::string("ScanSession: ") + e.what());
       return false;
@@ -178,8 +206,8 @@ bool ScanSession::Flush() {
     return true;
   }
 
-  cv::Mat image = m_film.Render();
-  if (!WriteSegment(image)) {
+  const CoveredFrame frame = m_film.RenderCovered();
+  if (!WriteSegment(frame.image, frame.coverage)) {
     return false;
   }
   m_open_abs_y = -1;
