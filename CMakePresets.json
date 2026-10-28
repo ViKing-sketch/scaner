@@ -1,0 +1,158 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "core-defaults",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "BUILD_CORE": "ON",
+        "BUILD_HARDWARE_TESTS": "OFF",
+        "SCANNER_RUN_HARDWARE": "OFF"
+      }
+    },
+    {
+      "name": "linux-core",
+      "displayName": "Linux: mandatory ctest, no wxWidgets or camera SDK",
+      "description": "Builds the core library and registers test_scan_geometry. System OpenCV and DCMTK. Does not configure the GUI or hardware tests.",
+      "inherits": "core-defaults",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-core",
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_APP": "OFF"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "inherits": "core-defaults",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": ["Windows"]
+        }
+      }
+    },
+    {
+      "name": "windows-msvc-x64",
+      "displayName": "MSVC x64 application (vcpkg manifest, baseline pinned)",
+      "description": "Official profile. BUILD_APP=ON: missing wxWidgets, OpenGL, glm, or MVCAMSDK_X64 is a configure error, not a skipped GUI target.",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "BUILD_APP": "ON",
+        "VCPKG_MANIFEST_FEATURES": "app"
+      }
+    },
+    {
+      "name": "windows-msvc-x64-core",
+      "displayName": "MSVC x64 mandatory ctest (no wxWidgets, no camera SDK)",
+      "description": "Core library and test_scan_geometry. vcpkg installs opencv4 and dcmtk from the baseline in vcpkg.json. The app feature is not installed.",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "BUILD_APP": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-core",
+      "configurePreset": "linux-core"
+    },
+    {
+      "name": "windows-msvc-x64",
+      "configurePreset": "windows-msvc-x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-msvc-x64-core",
+      "configurePreset": "windows-msvc-x64-core",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "mandatory",
+      "configurePreset": "linux-core",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "filter": {
+        "include": {
+          "label": "mandatory"
+        },
+        "exclude": {
+          "label": "hardware"
+        }
+      }
+    },
+    {
+      "name": "mandatory-windows",
+      "configurePreset": "windows-msvc-x64-core",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "filter": {
+        "include": {
+          "label": "mandatory"
+        },
+        "exclude": {
+          "label": "hardware"
+        }
+      }
+    },
+    {
+      "name": "mandatory-windows-app",
+      "configurePreset": "windows-msvc-x64",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      },
+      "filter": {
+        "include": {
+          "label": "mandatory"
+        },
+        "exclude": {
+          "label": "hardware"
+        }
+      }
+    }
+  ]
+}

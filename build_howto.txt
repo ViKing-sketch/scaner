@@ -1,33 +1,20 @@
-For Windows 10/11:
+Сборка описана в README.md.
 
-  - Download and install Visual Studio Code (VSCODE) for Windows
-    (https://code.visualstudio.com/download).
+Поддерживаемый профиль — MSVC x64, CMake presets и vcpkg manifest
+(baseline зафиксирован в vcpkg.json). Каталог vcpkg задаётся переменной
+VCPKG_ROOT, без путей конкретной машины.
 
-  - Install `C/C++` extension for the VSCODE.
-    It can be done in VSCODE's built in extension manager
-    (browse for Internet tips).
+Приложение:
 
-  - Download and install MSYS2 (https://www.msys2.org)
-    into the C:\msys64 folder.
+  cmake --preset windows-msvc-x64
+  cmake --build --preset windows-msvc-x64
 
-  - Install GCC/G++ compiler and DEV tools using `MSYS2 MING64` shell:
-    - Press Windows Key and start to type `mingw64`, run `MSYS2 MINGW64` app.
-    - Type into the terminal:
-        pacman -S base-devel mingw-w64-x86_64-gcc mingw-w64-x86_64-gdb mingw-w64-x86_64-wxwidgets3.2-msw mingw-w64-x86_64-dcmtk mingw-w64-x86_64-upx mingw-w64-x86_64-opencv mingw-w64-x86_64-glm mingw-w64-x86_64-qt6-base
-      and press ENTER key. Type Y and press ENTER for the question.
-      Wait for the end of installation.
-    - Add GCC/G++ to the system PATH:
-      - Press Windows Key and start to type `environment`,
-        run `Edit the system environment variables` app.
-      - Click on `Environment Variables` button.
-      - Double-Click on `PATH` line of the `System variables` block.
-      - Click on `New`, write C:\msys64\mingw64\bin and press ENTER.
-      - Click on OK in all system windows.
-      - Sign out and sign in again into your Windows account.
+Обязательные тесты без wxWidgets и без SDK камеры:
 
-  - Open project folder (using VSCODE).
-  - Open main.cpp file (using opened VSCODE window).
-  - In the right bottom corner of VSCODE's window
-    select C/C++ Configuration "windows-gcc-x64".
-  - Press "CTRL + SHIFT + B" to build a project into EXE binary.
-  - Browse for EXE binary in the folder "./out/app.exe".
+  cmake --preset windows-msvc-x64-core
+  cmake --build --preset windows-msvc-x64-core
+  ctest --preset mandatory-windows --output-on-failure
+
+Прежняя инструкция MSYS2/MinGW и сборка в out/app.exe не используется.
+Если запрошена сборка приложения и зависимости нет, CMake завершается
+ошибкой и не пропускает цель окна.

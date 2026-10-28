@@ -13,5 +13,7 @@ out/*log*.txt
 *.user
 build/
 build_release/
+vcpkg_installed/
+CMakeUserPresets.json
 .vscode/
 .cache

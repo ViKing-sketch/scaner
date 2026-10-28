@@ -1,0 +1,19 @@
+{
+  "name": "tape-scanner",
+  "version": "0.1.0",
+  "description": "Industrial film radiography scanner. Camera SDK is not a vcpkg port.",
+  "dependencies": [
+    "opencv4",
+    "dcmtk"
+  ],
+  "features": {
+    "app": {
+      "description": "Desktop UI dependencies. Enable with the windows-msvc-x64 preset (VCPKG_MANIFEST_FEATURES=app).",
+      "dependencies": [
+        "wxwidgets",
+        "glm"
+      ]
+    }
+  },
+  "builtin-baseline": "9eec002df1cd109f8f104cd966a763daf9751489"
+}
