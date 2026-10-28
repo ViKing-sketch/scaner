@@ -1,6 +1,7 @@
 #ifndef FILM_HPP
 #define FILM_HPP
 
+#include <tape_scanner/scanner/Coverage.hpp>
 #include <tape_scanner/scanner/Region.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 #include <opencv2/opencv.hpp>
@@ -9,13 +10,17 @@ class Film {
 public:
     Film() = default;
 
-    void PushRegion(cv::Mat img, int x, int y);
+    /// Пустая coverage: тайл целиком измерен, нули внутри него — сигнал.
+    void PushRegion(cv::Mat img, int x, int y, cv::Mat coverage = {});
 
     cv::Mat GetMat();
 
     /// Копия холста вместе с незаконченной полосой, в том числе короче полной ширины.
+    /// Незаполненные клетки остаются нулями. Маска и статистика — в RenderCovered().
     /// Исходный Film не меняется: повторный вызов не вклеивает полосу второй раз.
     cv::Mat Render() const;
+
+    CoveredFrame RenderCovered() const;
 
     bool HasOpenStripe() const;
     bool HasContent() const;

@@ -42,11 +42,13 @@ public:
   const std::string &SeriesUid() const { return m_series_uid; }
   const ScanGeometry &Geometry() const { return m_geometry; }
   const std::vector<std::string> &SavedPaths() const { return m_paths; }
+  /// Маска и статистика каждого уже записанного сегмента, в том же порядке, что SavedPaths().
+  const std::vector<SavedSegmentCoverage> &Coverage() const { return m_coverage; }
 
 private:
   bool Flush();
   bool CommitSplit();
-  bool WriteSegment(const cv::Mat &image);
+  bool WriteSegment(const cv::Mat &image, const cv::Mat &coverage);
 
   std::string m_chosen_path;
   ScanGeometry m_geometry;
@@ -61,4 +63,5 @@ private:
   int m_max_rows = kMaxDicomDimension;
   int m_saved = 0;
   std::vector<std::string> m_paths;
+  std::vector<SavedSegmentCoverage> m_coverage;
 };

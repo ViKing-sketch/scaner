@@ -1,4 +1,6 @@
+#include <tape_scanner/scanner/Coverage.hpp>
 #include <tape_scanner/scanner/DicomSeries.hpp>
+#include <tape_scanner/scanner/Film.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
@@ -385,6 +387,24 @@ void TestOverlapCutAndShortStripe() {
   CHECK(tags1.instance == "1");
   CHECK(tags2.instance == "2");
 
+  CHECK(session.Coverage().size() == 2);
+  CHECK(session.Coverage()[0].complete);
+  CHECK(session.Coverage()[1].complete);
+  CHECK(session.Coverage()[0].gap_reason.empty());
+  CHECK(session.Coverage()[1].stats.invalid_count == 0);
+  CHECK(session.Coverage()[1].stats.available);
+  CHECK(session.Coverage()[1].stats.min_value == 2000);
+  CHECK(session.Coverage()[1].stats.max_value == 2000);
+  CHECK(session.Coverage()[0].stats.min_value == 1000);
+  CHECK(session.Coverage()[0].stats.max_value == seam);
+  cv::Mat full_mask;
+  std::string full_reason;
+  CHECK(ReadCoverageMask(session.Coverage()[0].mask_path, full_mask, full_reason));
+  CHECK(full_reason.empty());
+  CHECK(full_mask.rows == pixels1.rows);
+  CHECK(full_mask.cols == pixels1.cols);
+  CHECK(cv::countNonZero(full_mask == 0) == 0);
+
   const std::string short_path = (dir / "short.dcm").string();
   ScanSession short_session(short_path, geometry);
   cv::Mat full(40, 20, CV_16UC1, cv::Scalar(1000));
@@ -400,6 +420,27 @@ void TestOverlapCutAndShortStripe() {
   CHECK(short_pixels.at<uint16_t>(39, 0) == 1000);
   CHECK(short_pixels.at<uint16_t>(40, 0) == 2000);
   CHECK(short_pixels.at<uint16_t>(40, 8) == 0);
+  CHECK(short_session.Coverage().size() == 1);
+  CHECK(!short_session.Coverage()[0].complete);
+  CHECK(short_session.Coverage()[0].gap_reason == kCoverageGapUnfilled);
+  cv::Mat short_mask;
+  std::string short_reason;
+  CHECK(ReadCoverageMask(short_session.Coverage()[0].mask_path, short_mask, short_reason));
+  CHECK(short_reason == kCoverageGapUnfilled);
+  CHECK(short_mask.rows == 55);
+  CHECK(short_mask.cols == 20);
+  CHECK(short_mask.at<uint8_t>(40, 8) == kCoverageUnfilled);
+  CHECK(short_mask.at<uint8_t>(40, 0) == kCoverageValid);
+  CHECK(short_mask.at<uint8_t>(39, 19) == kCoverageValid);
+  const IntensityStats short_stats = IntensityOnCoverage(short_pixels, short_mask);
+  CHECK(short_stats.available);
+  CHECK(short_stats.min_value == 1000);
+  CHECK(short_stats.max_value == 2000);
+  CHECK(short_stats.invalid_count == 15 * 12);
+  CHECK(short_stats.valid_count == 55 * 20 - 15 * 12);
+  CHECK(Near(short_stats.mean, (40.0 * 20.0 * 1000.0 + 15.0 * 8.0 * 2000.0) / short_stats.valid_count));
+  CHECK(short_session.Coverage()[0].stats.valid_count == short_stats.valid_count);
+  CHECK(Near(short_session.Coverage()[0].stats.mean, short_stats.mean));
 
   const auto missing = dir / "missing" / "roll.dcm";
   ScanSession retry(missing.string(), geometry);
@@ -420,6 +461,21 @@ void TestOverlapCutAndShortStripe() {
   CHECK(retried.at<uint16_t>(0, 0) == 1000);
   CHECK(retried.at<uint16_t>(20, 0) == 2000);
   CHECK(retried.at<uint16_t>(20, 6) == 0);
+  CHECK(retry.Coverage().size() == 1);
+  CHECK(!retry.Coverage()[0].complete);
+  cv::Mat retry_mask;
+  std::string retry_reason;
+  CHECK(ReadCoverageMask(retry.Coverage()[0].mask_path, retry_mask, retry_reason));
+  CHECK(retry_reason == kCoverageGapUnfilled);
+  CHECK(retry_mask.at<uint8_t>(20, 6) == kCoverageUnfilled);
+  CHECK(retry_mask.at<uint8_t>(20, 0) == kCoverageValid);
+  CHECK(retry_mask.at<uint8_t>(19, 15) == kCoverageValid);
+  const IntensityStats retry_stats = IntensityOnCoverage(retried, retry_mask);
+  CHECK(retry_stats.available);
+  CHECK(retry_stats.min_value == 1000);
+  CHECK(retry_stats.max_value == 2000);
+  CHECK(retry_stats.invalid_count == 10 * 10);
+  CHECK(retry_stats.valid_count == 20 * 16 + 10 * 6);
   const auto saved_size = std::filesystem::file_size(MakeDicomSegmentPath(missing.string(), 1));
   CHECK(retry.Finish());
   CHECK(retry.SavedSegmentCount() == 1);
@@ -436,6 +492,109 @@ void TestOverlapCutAndShortStripe() {
   CHECK(NearMm(series[1].position_row_mm,
                series[0].position_row_mm + static_cast<double>(series[0].rows) * series[0].spacing_row_mm));
 
+  std::filesystem::remove_all(dir);
+}
+
+void TestCoverageHoles() {
+  Film measured_zero;
+  cv::Mat black(4, 4, CV_16UC1, cv::Scalar(0));
+  measured_zero.PushRegion(black, 0, 0);
+  const CoveredFrame zeros = measured_zero.RenderCovered();
+  CHECK(zeros.complete);
+  CHECK(zeros.gap_reason.empty());
+  CHECK(zeros.stats.available);
+  CHECK(zeros.stats.min_value == 0);
+  CHECK(zeros.stats.max_value == 0);
+  CHECK(zeros.stats.mean == 0);
+  CHECK(zeros.stats.invalid_count == 0);
+  CHECK(zeros.stats.valid_count == 16);
+  CHECK(zeros.coverage.at<uint8_t>(0, 0) == kCoverageValid);
+
+  Film hole;
+  cv::Mat left(3, 2, CV_16UC1, cv::Scalar(1000));
+  cv::Mat right(3, 2, CV_16UC1, cv::Scalar(3000));
+  hole.PushRegion(left, 0, 0);
+  hole.PushRegion(right, 4, 0);
+  const CoveredFrame gapped = hole.RenderCovered();
+  CHECK(gapped.image.rows == 3);
+  CHECK(gapped.image.cols == 6);
+  CHECK(gapped.image.at<uint16_t>(1, 2) == 0);
+  CHECK(gapped.coverage.at<uint8_t>(1, 2) == kCoverageUnfilled);
+  CHECK(gapped.image.at<uint16_t>(1, 4) == 3000);
+  CHECK(gapped.coverage.at<uint8_t>(1, 4) == kCoverageValid);
+  CHECK(!gapped.complete);
+  CHECK(gapped.gap_reason == kCoverageGapUnfilled);
+  CHECK(gapped.stats.available);
+  CHECK(gapped.stats.min_value == 1000);
+  CHECK(gapped.stats.max_value == 3000);
+  CHECK(gapped.stats.invalid_count == 6);
+  CHECK(gapped.stats.valid_count == 12);
+  CHECK(Near(gapped.stats.mean, 2000));
+
+  Film shifted;
+  cv::Mat tile(2, 2, CV_16UC1, cv::Scalar(500));
+  tile.at<uint16_t>(0, 0) = 0;
+  shifted.PushRegion(tile, 2, 0);
+  const CoveredFrame offset = shifted.RenderCovered();
+  CHECK(offset.image.cols == 4);
+  CHECK(offset.image.at<uint16_t>(0, 0) == 0);
+  CHECK(offset.coverage.at<uint8_t>(0, 0) == kCoverageUnfilled);
+  CHECK(offset.image.at<uint16_t>(0, 2) == 0);
+  CHECK(offset.coverage.at<uint8_t>(0, 2) == kCoverageValid);
+  CHECK(offset.stats.available);
+  CHECK(offset.stats.min_value == 0);
+  CHECK(offset.stats.max_value == 500);
+  CHECK(offset.stats.invalid_count == 4);
+  CHECK(offset.stats.valid_count == 4);
+  CHECK(Near(offset.stats.mean, 375));
+
+  cv::Mat missing;
+  std::string missing_reason = "kept";
+  CHECK(!ReadCoverageMask((std::filesystem::temp_directory_path() / "tape_scanner_no_such.coverage").string(), missing,
+                          missing_reason));
+  CHECK(missing.empty());
+  CHECK(missing_reason.empty());
+
+  const auto dir = std::filesystem::temp_directory_path() / "tape_scanner_coverage_split";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  ScanGeometry geometry;
+  geometry.bin = 1;
+  geometry.pixel_um_x = kNominalPixelUm;
+  geometry.pixel_um_y = kNominalPixelUm;
+  ScanSession session((dir / "roll.dcm").string(), geometry, 50);
+  cv::Mat wide(40, 16, CV_16UC1, cv::Scalar(1000));
+  cv::Mat narrow(30, 6, CV_16UC1, cv::Scalar(2000));
+  CHECK(session.PushRegion(wide, 0, 0));
+  CHECK(session.PushRegion(narrow, 0, 30));
+  CHECK(session.Finish());
+  CHECK(session.SavedSegmentCount() == 2);
+  CHECK(session.Coverage().size() == 2);
+  CHECK(session.Coverage()[0].complete);
+  CHECK(session.Coverage()[0].rows == 40);
+  CHECK(session.Coverage()[0].stats.min_value == 1000);
+  CHECK(session.Coverage()[0].stats.invalid_count == 0);
+  CHECK(!session.Coverage()[1].complete);
+  CHECK(session.Coverage()[1].gap_reason == kCoverageGapUnfilled);
+  CHECK(session.Coverage()[1].rows == 20);
+  CHECK(session.Coverage()[1].cols == 16);
+  CHECK(session.Coverage()[1].stats.available);
+  CHECK(session.Coverage()[1].stats.min_value == 2000);
+  CHECK(session.Coverage()[1].stats.max_value == 2000);
+  CHECK(session.Coverage()[1].stats.invalid_count == 20 * 10);
+  CHECK(session.Coverage()[1].stats.valid_count == 20 * 6);
+  cv::Mat tail_pixels;
+  cv::Mat tail_mask;
+  std::string tail_reason;
+  CHECK(LoadPixels(session.SavedPaths()[1], tail_pixels));
+  CHECK(ReadCoverageMask(session.Coverage()[1].mask_path, tail_mask, tail_reason));
+  CHECK(tail_reason == kCoverageGapUnfilled);
+  CHECK(tail_pixels.rows == 20);
+  CHECK(tail_pixels.at<uint16_t>(0, 0) == 2000);
+  CHECK(tail_mask.at<uint8_t>(0, 0) == kCoverageValid);
+  CHECK(tail_pixels.at<uint16_t>(19, 6) == 0);
+  CHECK(tail_mask.at<uint8_t>(19, 6) == kCoverageUnfilled);
+  CHECK(tail_mask.at<uint8_t>(19, 5) == kCoverageValid);
   std::filesystem::remove_all(dir);
 }
 
@@ -630,6 +789,7 @@ int main() {
   TestBinningAndSpacing();
   TestSegmentSplit();
   TestOverlapCutAndShortStripe();
+  TestCoverageHoles();
   TestSeriesListSkipsPixelData();
   TestWindowLevel();
   TestRulerPitch();

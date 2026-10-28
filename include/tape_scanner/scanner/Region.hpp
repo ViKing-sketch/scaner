@@ -15,12 +15,18 @@ public:
 
     Region(int x, int y, const cv::Mat &img);
 
+    /// Пустая coverage значит: весь тайл измерен, включая нулевые отсчёты.
+    Region(int x, int y, const cv::Mat &img, const cv::Mat &coverage);
+
     void InsertRegion(const Region &region);
 
     /// Глубокая копия холста: последующая вставка не меняет исходный Region.
     Region Clone() const;
 
     cv::Mat &GetMat() const;
+
+    /// Та же сетка, что у холста. 0 — дыра, ненулевое значение — измеренный пиксель.
+    const cv::Mat &Valid() const;
 
     cv::Rect GetRect() const;
 
@@ -30,6 +36,8 @@ private:
     std::pair<bool, std::string> IsInsertable(const Region &region);
 
     cv::Mat GetRoi(cv::Rect roi) const;
+
+    cv::Mat ValidRoi(cv::Rect roi) const;
 
     cv::Rect GetIntersect(cv::Rect region);
 
@@ -46,5 +54,6 @@ private:
     int m_x = 0;
     int m_y = 0;
     mutable cv::Mat m_canvas;
+    cv::Mat m_valid;
     cv::Rect m_pasted_region = {0, 0, 0, 0};
 };

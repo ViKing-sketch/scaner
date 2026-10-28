@@ -14,6 +14,7 @@ endif()
 
 add_library(tape_scanner_scan STATIC
     src/scanner/Utils.cpp
+    src/scanner/Coverage.cpp
     src/scanner/Film.cpp
     src/scanner/Region.cpp
     src/scanner/ScanSession.cpp
