@@ -22,12 +22,23 @@ bool Controller::TryConnect() {
     if (res) {
         m_status = Status::connected;
         InitControllerAfterConnect();
+    } else {
+        m_status = Status::disconnected;
     }
     return res;
 }
 
 bool Controller::IsConnected() {
-    return m_status == Status::connected;
+    if (m_status != Status::connected) {
+        return false;
+    }
+    // Флаг сокета, без команды протокола. Тихий обрыв кабеля остаётся «есть связь»,
+    // пока сокет сам не сообщит, что он закрыт (Z04, heartbeat, ждёт Макса).
+    if (!m_socket.IsConnected()) {
+        m_status = Status::disconnected;
+        return false;
+    }
+    return true;
 }
 
 void Controller::SendAnyCommand(const std::string& any_command) {

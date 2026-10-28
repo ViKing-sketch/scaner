@@ -9,8 +9,10 @@
 #include <camera_api/CameraApi.h>
 #include <tape_scanner/dicom_viewer/DicomProcessor.h>
 #include <tape_scanner/scanner/Controller.hpp>
+#include <tape_scanner/scanner/ControllerLink.hpp>
 #include <tape_scanner/scanner/Camera.hpp>
 #include <tape_scanner/scanner/Scanner.hpp>
+#include <memory>
 #include <memory.h>
 
 enum {
@@ -104,6 +106,8 @@ private:
   void ApplyRulerPitch(bool along_x);
   void OnRulerPixels(bool along_x, double pixels);
   bool InitController();
+  bool ProbeControllerLink();
+  void ApplyControllerLink(const ControllerLinkSnapshot &snap);
   bool InitCamera();
   bool InitScanner();
   wxString get_time_str();
@@ -206,6 +210,7 @@ private:
   DicomProcessor m_dcm_processor;
 
   // Scanning
+  std::unique_ptr<ControllerLinkPoll> m_controller_link;
   std::shared_ptr<Controller> m_controller;
   std::shared_ptr<Camera> m_camera;
   std::unique_ptr<Scanner> m_scanner;
