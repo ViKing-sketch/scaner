@@ -44,6 +44,14 @@ if(MSVC)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
 
+# Импорт BIN и паспорт линейки. Собирается вместе с ядром, без wxWidgets и SDK камеры.
+add_executable(test_bin_import tests/test_bin_import.cpp src/dicom_generator/BinToDcmConverter.cpp)
+target_link_libraries(test_bin_import PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_bin_import PRIVATE /utf-8)
+endif()
+add_test(NAME test_bin_import COMMAND test_bin_import)
+
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
 find_package(glm CONFIG QUIET)

@@ -29,7 +29,12 @@ cv::Mat ApplyScanBinning(const cv::Mat &src, int bin);
  * Пустые UID генерируются при записи. Study/Series одной серии скана
  * нужно передавать одинаковыми, SOP — своим на каждый файл (или пустым).
  *
- * pixel_spacing_* — миллиметры. По умолчанию 0.042 мм: номинал 21 мкм и bin = 2.
+ * pixel_spacing_* — миллиметры, параметр записи. Поле по умолчанию 0.042 мм оставлено для
+ * уже существующих вызовов saveToDcm без геометрии (номинал 21 мкм и bin = 2).
+ * Импорт BIN этот пропуск не использует: ConvertBinToDcm требует шаг аргументом.
+ *
+ * bin 1 или 2 записывает паспорт масштаба (приватный создатель SCANER). 0 — тегов нет.
+ * Pixel Spacing сам по себе bin не хранит и не восстанавливает.
  */
 struct DicomWriteParams {
   std::string study_instance_uid;
@@ -40,6 +45,15 @@ struct DicomWriteParams {
   double pixel_spacing_col_mm = 0.042;
   /// Image Position Patient (0020,0032), средняя координата: индекс первой строки сегмента × шаг строки, мм.
   double image_position_row_mm = 0;
+  /// 0 — не писать паспорт. 1 или 2 — bin сохранённой сетки.
+  int bin = 0;
+  /// Плоскость замера. Пустая строка при записи паспорта становится "film".
+  std::string plane;
+  /// ROI на сохранённой сетке, "x\\y\\cols\\rows". Пустая строка — весь кадр.
+  std::string roi;
+  /// Преобразование получения, не поворот окна просмотра.
+  int rotation_deg = 0;
+  int flip = 0;
 };
 
 /**

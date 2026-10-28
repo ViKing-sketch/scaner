@@ -145,3 +145,64 @@ inline bool SourceMarkFromPresented(double presented_x, double presented_y, int 
 inline double AxisPixelSpan(double x1, double y1, double x2, double y2, bool along_x) {
   return std::abs(along_x ? (x2 - x1) : (y2 - y1));
 }
+
+/// Допуск замера линейкой, мкм. Ниже — шум ввода, выше — явная ошибка масштаба.
+/// Это предел ввода, не погрешность изготовленного сканера.
+inline constexpr double kMinOpticalPitchUm = 1.0;
+inline constexpr double kMaxOpticalPitchUm = 500.0;
+
+enum class RulerBinSource { None, ImagePassport, ExplicitUser };
+
+struct RulerBinChoice {
+  bool ok = false;
+  int bin = 0;
+  RulerBinSource source = RulerBinSource::None;
+};
+
+/// bin линейки. Паспорт открытого снимка важнее явного ввода.
+/// Явный 1 или 2 используется только если в паспорте bin нет.
+/// Аргумента «режим следующего скана» нет: им bin чужого файла не задаётся.
+/// Pixel Spacing сюда не передаётся и bin из него не вычисляется.
+inline RulerBinChoice ChooseRulerBin(int passport_bin, int explicit_bin) {
+  RulerBinChoice choice;
+  if (passport_bin == 1 || passport_bin == 2) {
+    choice.ok = true;
+    choice.bin = passport_bin;
+    choice.source = RulerBinSource::ImagePassport;
+    return choice;
+  }
+  if (explicit_bin == 1 || explicit_bin == 2) {
+    choice.ok = true;
+    choice.bin = explicit_bin;
+    choice.source = RulerBinSource::ExplicitUser;
+    return choice;
+  }
+  return choice;
+}
+
+/// Оптический шаг, мкм, с проверкой конечности и диапазона.
+/// При отказе optical_um не меняется.
+inline bool RulerOpticalPitch(double distance_mm, double saved_pixels, int bin, double &optical_um) {
+  if (!std::isfinite(distance_mm) || !std::isfinite(saved_pixels)) {
+    return false;
+  }
+  double pitch = 0;
+  if (!OpticalPitchFromSavedGrid(distance_mm, saved_pixels, bin, pitch)) {
+    return false;
+  }
+  if (!std::isfinite(pitch) || pitch < kMinOpticalPitchUm || pitch > kMaxOpticalPitchUm) {
+    return false;
+  }
+  optical_um = pitch;
+  return true;
+}
+
+/// Подпись шага сохранённой сетки. Ровно 21.0 мкм без замера помечается как номинал.
+inline std::string SavedPitchCaption(double optical_um, int bin, bool measured) {
+  const std::string pitch = FormatPitchUm(optical_um, bin);
+  const bool nominal = !measured && std::isfinite(optical_um) && std::abs(optical_um - kNominalPixelUm) <= 1e-9;
+  if (nominal) {
+    return pitch + " nominal";
+  }
+  return pitch;
+}

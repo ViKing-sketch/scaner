@@ -27,3 +27,18 @@ std::vector<DicomSeriesPart> ListDicomSeries(const std::string &any_segment_path
 /// Предел длины одного элемента при разборе серии.
 /// Теги заголовка укладываются. Pixel Data сегмента скана длиннее и не читается.
 inline constexpr unsigned kDicomSeriesValueLimit = 4096;
+
+/**
+ * Паспорт масштаба открытого снимка. Пишется saveToDcm, когда bin равен 1 или 2.
+ * present == false у файла без создателя SCANER: шаг пикселя bin не заменяет.
+ */
+struct ImageScalePassport {
+  bool present = false;
+  int bin = 0;
+  std::string plane;
+  std::string roi;
+  int rotation_deg = 0;
+  int flip = 0;
+};
+
+ImageScalePassport ReadImageScalePassport(const std::string &path);

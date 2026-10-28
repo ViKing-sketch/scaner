@@ -501,8 +501,8 @@ void MyMainWindow::ReloadScanBinChoice() {
   const int sel = m_scan_bin_choice->GetSelection();
 
   auto label = [&](int bin, const wxString &dpi) {
-    const std::string pitch_x = FormatPitchUm(um_x, bin);
-    const std::string pitch_y = FormatPitchUm(um_y, bin);
+    const std::string pitch_x = SavedPitchCaption(um_x, bin, m_pitch_from_ruler_x);
+    const std::string pitch_y = SavedPitchCaption(um_y, bin, m_pitch_from_ruler_y);
     const wxString x_text = wxString::FromUTF8(pitch_x.c_str());
     const wxString y_text = wxString::FromUTF8(pitch_y.c_str());
     if (pitch_x == pitch_y) {
@@ -592,10 +592,16 @@ void MyMainWindow::SetupScanGeometryControls() {
   scan_sizer->Insert(insert_at + 4,
                      makeRulerRow(labelOf(wxT("Ruler Y, mm:")), m_ruler_mm_y, m_ruler_px_y, labelOf(wxT("Apply Y")), false),
                      0, wxEXPAND, 5);
-  scan_sizer->Insert(insert_at + 5,
-                     new wxStaticText(scan_box, wxID_ANY,
-                                      labelOf(wxT("Pixels are counted on the saved grid; optical pitch divides by bin."))),
-                     0, wxALL, 8);
+  m_ruler_bin_choice = new wxChoice(scan_box, wxID_ANY);
+  m_ruler_bin_choice->Append(labelOf(wxT("file passport")));
+  m_ruler_bin_choice->Append(labelOf(wxT("1 explicit")));
+  m_ruler_bin_choice->Append(labelOf(wxT("2 explicit")));
+  m_ruler_bin_choice->SetSelection(0);
+  m_ruler_source_text = new wxStaticText(scan_box, wxID_ANY, wxEmptyString);
+  m_ruler_source_text->Wrap(420);
+  scan_sizer->Insert(insert_at + 5, makeRow(labelOf(wxT("Ruler bin:")), m_ruler_bin_choice), 0, wxEXPAND, 5);
+  scan_sizer->Insert(insert_at + 6, m_ruler_source_text, 0, wxALL, 8);
+  m_ruler_bin_choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent &) { UpdateRulerSourceLabel(); });
 
   m_pixel_um_x_text->SetValue(wxString(settings["scan"]["pixel_um_x"]));
   m_pixel_um_y_text->SetValue(wxString(settings["scan"]["pixel_um_y"]));
@@ -603,13 +609,24 @@ void MyMainWindow::SetupScanGeometryControls() {
   m_scan_bin_choice->Append(wxT("1200 dpi"));
   m_scan_bin_choice->SetSelection(std::string(settings["scan"]["bin"]) == "1" ? 1 : 0);
   ReloadScanBinChoice();
-  m_pixel_um_x_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
-  m_pixel_um_y_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
+  m_pixel_um_x_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) {
+    if (!m_updating_ruler) {
+      m_pitch_from_ruler_x = false;
+    }
+    ReloadScanBinChoice();
+  });
+  m_pixel_um_y_text->Bind(wxEVT_TEXT, [this](wxCommandEvent &) {
+    if (!m_updating_ruler) {
+      m_pitch_from_ruler_y = false;
+    }
+    ReloadScanBinChoice();
+  });
   m_scan_bin_choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent &) { ReloadScanBinChoice(); });
   autosave_scan_bin = m_scan_bin_choice->GetSelection() == 1 ? wxT("1") : wxT("2");
   autosave_pixel_um_x = m_pixel_um_x_text->GetValue();
   autosave_pixel_um_y = m_pixel_um_y_text->GetValue();
 
+  UpdateRulerSourceLabel();
   scan_box->Layout();
   if (m_panel3) {
     m_panel3->Layout();
@@ -650,6 +667,49 @@ void MyMainWindow::OnScanStart(wxCommandEvent &event) {
   m_scanner->StartScan(m_dst_scan_file_path->GetPath().ToStdString());
 }
 
+int MyMainWindow::ExplicitRulerBin() const {
+  if (!m_ruler_bin_choice) {
+    return 0;
+  }
+  if (m_ruler_bin_choice->GetSelection() == 1) {
+    return 1;
+  }
+  if (m_ruler_bin_choice->GetSelection() == 2) {
+    return 2;
+  }
+  return 0;
+}
+
+void MyMainWindow::UpdateRulerSourceLabel() {
+  if (!m_ruler_source_text) {
+    return;
+  }
+  const auto textOf = [this](const wxString &english) {
+    return lng->translate(english, wxT("English"), wxT("CURRENT"));
+  };
+  wxString text;
+  if (m_open_passport.present) {
+    text = wxString::Format(textOf(wxT("Open image bin %d comes from the file passport (%s). "
+                                        "The next-scan resolution is not used. 21 um stays nominal until a ruler apply.")),
+                            m_open_passport.bin,
+                            wxString::FromUTF8(m_open_passport.plane.empty() ? "film" : m_open_passport.plane.c_str()));
+  } else if (m_dcm_processor.CurrentImagePath().empty()) {
+    text = textOf(wxT("No image is open. 21 um is the nominal pitch. "
+                      "The next-scan resolution is not a ruler bin."));
+  } else {
+    text = textOf(wxT("This file has no bin passport. Choose ruler bin 1 or 2 explicitly. "
+                      "Pixel spacing does not recover bin. 21 um is nominal."));
+  }
+  m_ruler_source_text->SetLabel(text);
+  m_ruler_source_text->Wrap(420);
+}
+
+void MyMainWindow::RefreshOpenPassport() {
+  const std::string path = m_dcm_processor.CurrentImagePath();
+  m_open_passport = path.empty() ? ImageScalePassport{} : ReadImageScalePassport(path);
+  UpdateRulerSourceLabel();
+}
+
 void MyMainWindow::ApplyRulerPitch(bool along_x) {
   wxTextCtrl *mm_box = along_x ? m_ruler_mm_x : m_ruler_mm_y;
   wxTextCtrl *px_box = along_x ? m_ruler_px_x : m_ruler_px_y;
@@ -657,13 +717,30 @@ void MyMainWindow::ApplyRulerPitch(bool along_x) {
   if (!mm_box || !px_box || !dest) {
     return;
   }
-  const int bin = (m_scan_bin_choice && m_scan_bin_choice->GetSelection() == 1) ? 1 : kDefaultBin;
-  double optical_um = 0;
-  if (!OpticalPitchFromSavedGrid(safeStrToDouble(mm_box->GetValue()), safeStrToDouble(px_box->GetValue()), bin, optical_um)) {
-    wxLogWarning("Ruler distance and pixel count must be positive");
+  const RulerBinChoice choice = ChooseRulerBin(m_open_passport.bin, ExplicitRulerBin());
+  if (!choice.ok) {
+    wxLogWarning("Ruler bin comes from the open image. This file has no passport; "
+                 "pick 1 or 2 explicitly. The next-scan resolution is not used.");
     return;
   }
+  if (choice.source == RulerBinSource::ExplicitUser) {
+    wxLogMessage("Ruler bin %d is an explicit entry for a file without a passport.", choice.bin);
+  }
+  double optical_um = 0;
+  if (!RulerOpticalPitch(safeStrToDouble(mm_box->GetValue().ToStdString()),
+                         safeStrToDouble(px_box->GetValue().ToStdString()), choice.bin, optical_um)) {
+    wxLogWarning("Ruler distance and pixel count must be positive and finite, and the pitch must stay in range");
+    return;
+  }
+  m_updating_ruler = true;
   dest->SetValue(wxString::FromUTF8(FormatPitchUm(optical_um, 1)));
+  if (along_x) {
+    m_pitch_from_ruler_x = true;
+  } else {
+    m_pitch_from_ruler_y = true;
+  }
+  m_updating_ruler = false;
+  ReloadScanBinChoice();
 }
 
 void MyMainWindow::OnRulerPixels(bool along_x, double pixels) {
@@ -1230,6 +1307,7 @@ void MyMainWindow::OnDCMFileOpen(wxCommandEvent& event)
       }
     }
     delete dcm_dict;
+    RefreshOpenPassport();
     _log(_("Successfuly opened. See Data tab.\n"));
     // title setup
     SetTitle(wxString::Format(_("%s (frames: %i, size: %ix%i)"),
@@ -1243,16 +1321,19 @@ void MyMainWindow::OnCurrentFrameChange( wxCommandEvent& event ) {
   m_current_frame->GetValue().ToInt(&open_file_frame);
   open_file_frame = m_dcm_processor.SetFrame(open_file_frame - 1);
   m_current_frame->SetValue(wxString::Format(wxT("%i"), open_file_frame + 1));
+  RefreshOpenPassport();
 }
 
 void MyMainWindow::OnCurrentFramePrev( wxCommandEvent& event ) {
   open_file_frame = m_dcm_processor.PrevFrame();
   m_current_frame->SetValue(wxString::Format(wxT("%i"), open_file_frame + 1));
+  RefreshOpenPassport();
 }
 
 void MyMainWindow::OnCurrentFrameNext( wxCommandEvent& event ) {
   open_file_frame = m_dcm_processor.NextFrame();
   m_current_frame->SetValue(wxString::Format(wxT("%i"), open_file_frame + 1));
+  RefreshOpenPassport();
 }
 
 void MyMainWindow::OnWindowLevelChange( wxCommandEvent& event ) {
@@ -1564,8 +1645,12 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
     const ScanGeometry geometry = CurrentScanGeometry();
     const std::vector<std::string> written =
         ConvertBinToDcm(file_path.ToStdString(), width, height, bits, frames, all_frames_as_1st,
-                        [this](const std::string &msg) { _log(msg); }, dest_file_path.ToStdString(),
-                        geometry.RowSpacingMm(), geometry.ColSpacingMm());
+                        [this](const std::string &msg) { _log(msg); }, geometry.RowSpacingMm(),
+                        geometry.ColSpacingMm(), dest_file_path.ToStdString());
+    if (written.empty()) {
+      _log(_("ERROR: conversion produced no file.\n"));
+      return;
+    }
     wxString names;
     for (const std::string &path : written) {
       if (!names.empty()) {
