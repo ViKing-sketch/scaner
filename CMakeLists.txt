@@ -19,6 +19,7 @@ add_library(tape_scanner_scan STATIC
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
     src/scanner/WindowLevel.cpp
+    src/scanner/RawFrame.cpp
 )
 target_include_directories(tape_scanner_scan PUBLIC "include/")
 target_link_libraries(tape_scanner_scan PUBLIC ${OpenCV_LIBS})
@@ -43,6 +44,14 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+# Распаковка RAW не линкует SDK камеры и не требует подключённого сканера.
+add_executable(test_raw_frame tests/test_raw_frame.cpp)
+target_link_libraries(test_raw_frame PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_raw_frame PRIVATE /utf-8)
+endif()
+add_test(NAME test_raw_frame COMMAND test_raw_frame)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)

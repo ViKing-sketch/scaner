@@ -27,6 +27,10 @@ public:
     double GetExpose();
 
     uint8_t* GetCadr(tSdkFrameHead& frame_info, double expose = 0.0);
+    /// Значащие биты последнего успешно разобранного кадра. 0, если кадра не было.
+    int LastSignificantBits() const { return m_significant_bits; }
+    /// uiMediaType последнего успешно разобранного кадра. 0, если кадра не было.
+    uint32_t LastMediaType() const { return m_media_type; }
     void SaveCadrTo(const std::string& dest_path);
     wxBitmap Snapshot(double expose = 0.0);
     cv::Mat GetMat(double expose = 0.0);
@@ -45,6 +49,8 @@ public:
     size_t m_pixel_size = 0;
     size_t m_height = 0;
     size_t m_width = 0;
+    int m_significant_bits = 0;
+    uint32_t m_media_type = 0;
     cv::Mat m_responses;
 
     std::mutex m_mutex;

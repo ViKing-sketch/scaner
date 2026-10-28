@@ -1,10 +1,18 @@
 #include "tape_scanner/scanner/Utils.hpp"
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/RawFrame.hpp>
 #include <opencv2/photo.hpp>
+
+#include <cstring>
+
+static_assert(tape_scanner::kMediaMono8 == CAMERA_MEDIA_TYPE_MONO8);
+static_assert(tape_scanner::kMediaMono12 == CAMERA_MEDIA_TYPE_MONO12);
+static_assert(tape_scanner::kMediaMono12Packed == CAMERA_MEDIA_TYPE_MONO12_PACKED);
+static_assert(tape_scanner::kMediaMono16 == CAMERA_MEDIA_TYPE_MONO16);
+static_assert(tape_scanner::kMediaMono12PackedMv == CAMERA_MEDIA_TYPE_MONO12_PACKED_MV);
 
 namespace {
 
-constexpr int BYTES_PEER_PIXEL = 2;
 const std::string RESPONSES_FILE_NAME = "responses.xml";
 
 void TryOrLogicError(CameraSdkStatus status, const std::string& error_msg) {
@@ -66,6 +74,8 @@ double Camera::GetExpose() {
 }
 
 uint8_t* Camera::GetCadr(tSdkFrameHead& frame_info, double expose) {
+    m_significant_bits = 0;
+    m_media_type = 0;
     uint8_t* raw_data = nullptr;
 
     if(expose != 0.0)
@@ -78,38 +88,41 @@ uint8_t* Camera::GetCadr(tSdkFrameHead& frame_info, double expose) {
         CameraGetImageBuffer(m_h_camera, &frame_info, &raw_data, 3000),
         "GetImageBufferPriority error!");
 
+    struct ReleaseSdkBuffer {
+        int handle;
+        uint8_t* data;
+        ~ReleaseSdkBuffer() {
+            if (data != nullptr)
+                CameraReleaseImageBuffer(handle, data);
+        }
+    } release{m_h_camera, raw_data};
 
-    // CameraImageProcess(this->m_h_camera, raw_data, this->m_frame_buffer,
-    //                    &frame_info);
+    // Формат берётся из заголовка кадра. CameraSetIspOutFormat его не подтверждает.
+    // CameraImageProcess не вызывается: это путь ISP, не RAW.
+    tape_scanner::RawDecodeRequest request;
+    request.media_type = frame_info.uiMediaType;
+    request.width = frame_info.iWidth;
+    request.height = frame_info.iHeight;
+    request.stride = 0;
+    request.byte_order = tape_scanner::RawByteOrder::LittleEndian;
+    request.data = raw_data;
+    request.size = frame_info.uBytes;
 
-    auto unpack_raw_12 = [](const uint8_t* packed, uint16_t* unpacked, int width, int height) {
-      int totalPixels = width * height;
-      // Обрабатываем по 2 пикселя (3 байта) за итерацию
-      for (int i = 0, j = 0; j < totalPixels; i += 3, j += 2) {
-        uint8_t b0 = packed[i];    // Старший байт первого пикселя
-        uint8_t b1 = packed[i+1];  // Младшие полубайты перого и второго пикселя
-        uint8_t b2 = packed[i+2];  // Старший байт второго писеля
+    const tape_scanner::RawDecodeResult decoded = tape_scanner::DecodeRawFrame(request);
+    if (decoded.status != tape_scanner::RawDecodeStatus::Ok) {
+        throw std::runtime_error(std::string("RAW decode failed: ") +
+                                 tape_scanner::RawDecodeStatusText(decoded.status));
+    }
 
-        uint16_t p0_std = (((b0  <<  4) &  0xFF0) | ((b1 >> 4) & 0xF )) & 0xFFF;
-        uint16_t p1_std = (((b2  <<  4) &  0xFF0) | ((b1) & 0xF )) & 0xFFF;
-
-        unpacked[j]   = p0_std;
-        unpacked[j+1] = p1_std;
-      }
-    };
-
-    unpack_raw_12(raw_data, (uint16_t*)this->m_frame_buffer, frame_info.iWidth, frame_info.iHeight);
-
-    cv::Mat unpacked(frame_info.iHeight, frame_info.iWidth, CV_16UC1, this->m_frame_buffer);
-    unpacked -= 18; // Dark
-    unpacked *= (65536/3800.0);
-    // memcpy(unpacked.data, this->m_frame_buffer, unpacked.total() * unpacked.elemSize());
-    cv::imwrite("unpacked.png", unpacked);
-
-    // memcpy(this->m_frame_buffer, raw_data, frame_info.iWidth * frame_info.iHeight * BYTES_PEER_PIXEL);
-    CameraReleaseImageBuffer(this->m_h_camera, raw_data);
-
-    return this->m_frame_buffer;
+    const size_t bytes = decoded.image.samples.size() * sizeof(uint16_t);
+    const size_t capacity = m_height * m_width * m_pixel_size;
+    if (m_frame_buffer == nullptr || m_pixel_size < sizeof(uint16_t) || bytes > capacity) {
+        throw std::runtime_error("RAW frame does not fit the capture buffer");
+    }
+    std::memcpy(m_frame_buffer, decoded.image.samples.data(), bytes);
+    m_significant_bits = decoded.image.significant_bits;
+    m_media_type = decoded.image.media_type;
+    return m_frame_buffer;
 }
 
 void Camera::SaveCadrTo(const std::string& dest_path) {
