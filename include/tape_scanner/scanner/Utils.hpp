@@ -9,7 +9,11 @@ int safeStrToInt(const std::string &str_num);
 
 double safeStrToDouble(const std::string &str_double);
 
-cv::Mat hdr(std::vector<std::pair<cv::Mat, double> > cadres, int pix_max_val = 65535);
+/**
+ * Сведение кадров. Второе число пары — длительность импульса подсветки, микросекунды.
+ * Это эффективная экспозиция. Затвор камеры в вес не входит.
+ */
+cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val = 65535);
 
 cv::Mat readMatFromFile(std::string key, std::string file_name = "test.xml");
 
@@ -40,6 +44,9 @@ struct DicomWriteParams {
   double pixel_spacing_col_mm = 0.042;
   /// Image Position Patient (0020,0032), средняя координата: индекс первой строки сегмента × шаг строки, мм.
   double image_position_row_mm = 0;
+  /// Image Comments (0020,4000). Пустая строка — тег не пишется.
+  /// Сессия кладёт сюда запрошенную и эффективную экспозицию.
+  std::string image_comments;
 };
 
 /**

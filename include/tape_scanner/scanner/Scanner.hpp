@@ -9,6 +9,7 @@
 #include <opencv2/opencv.hpp>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 class ScanSession;
 
@@ -53,6 +54,8 @@ private:
     void GoCameraToNextPosition();
     void GoFilmToNextRow();
     void CaptureCadr(bool need_save = true);
+    /// Запрошенные микросекунды текущего прохода. При калибровке — flat_exposes.
+    const std::vector<float> &ActiveExposures() const;
     cv::Point GetCurPixelCoords();
     void InitCameraCalibrate();
     void InitScannerCalibrate();

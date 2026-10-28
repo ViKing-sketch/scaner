@@ -1,4 +1,5 @@
 #include <tape_scanner/scanner/Scanner.hpp>
+#include <tape_scanner/scanner/ExposurePulse.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 #include <chrono>
@@ -11,6 +12,9 @@
 namespace {
 constexpr std::string COEFS_FILE_NAME = R"(./coefs.xml)";
 constexpr double EXPOSE_DESCRET = 16.0;
+// Цели импульса подсветки, микросекунды. Затвор = цель + запас. Вес HDR = импульс.
+const std::vector<float> kScanExposeUs = {16.f, 96.f, 320.f, 1600.f, 4400.f, 8000.f,
+                                          14000.f, 20000.f, 28000.f, 30720.f};
 }
 
 Scanner::Scanner(Controller& controller, Camera& camera)
@@ -34,6 +38,16 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
 
     m_dst_scan_file_path = dst_scan_file_path;
     m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry);
+    for (const float target_us : ActiveExposures()) {
+      const ExposureShot shot = PlanExposure(target_us);
+      if (!shot.planned) {
+        wxLogError("StartScan: exposure plan rejected for %g us", target_us);
+        continue;
+      }
+      m_session->RecordExposure(shot);
+    }
+    wxLogMessage(wxString::Format("Session metadata records %u light pulses",
+                                  static_cast<unsigned>(ActiveExposures().size())));
     m_running = true;
     m_foce_canceled_unsafe = false;
     m_cur_dir = -1;
@@ -288,7 +302,7 @@ void Scanner::CaptureCadr(bool need_save) {
     if(m_light_only_when_capture)
       m_controller.LightEnable(true);
 
-    cv::Mat cadr_with_exp = m_camera.GetCadrWithExposes({16, 96, 320, 1600, 4400, 8000, 14000, 20000, 28000, 30720});
+    cv::Mat cadr_with_exp = m_camera.GetCadrWithExposes(ActiveExposures(), &m_controller);
 
     if(m_light_only_when_capture)
       m_controller.LightEnable(false);
@@ -333,13 +347,20 @@ void Scanner::CaptureCadr(bool need_save) {
     if(m_light_only_when_capture)
       m_controller.LightEnable(true);
 
-    AccumCalibrates(m_cur_camera_pos, m_camera.GetCadrWithExposes(m_calibrates.flat_exposes));
+    AccumCalibrates(m_cur_camera_pos, m_camera.GetCadrWithExposes(ActiveExposures(), &m_controller));
 
     if(m_light_only_when_capture)
       m_controller.LightEnable(false);
   }
 
   wxLogMessage(wxString::Format("CaptureCadr done"));
+}
+
+const std::vector<float> &Scanner::ActiveExposures() const {
+  if (m_calibrate_running) {
+    return m_calibrates.flat_exposes;
+  }
+  return kScanExposeUs;
 }
 
 cv::Point Scanner::GetCurPixelCoords() {

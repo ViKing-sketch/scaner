@@ -4,12 +4,14 @@
 #include <stdexcept>
 #include <string>
 
+#include <tape_scanner/scanner/ExposurePulse.hpp>
+
 #include <wx/event.h>
 #include <wx/socket.h>
 
 wxDECLARE_EVENT(CONTROLLER_EVENT, wxCommandEvent);
 
-class Controller : public wxEvtHandler {
+class Controller : public wxEvtHandler, public IControllerPulse {
 public:
     enum class UserEvtType {
         CONNECTED,
@@ -38,6 +40,8 @@ public:
     void ResetRollerPos();
     void GoRollersTo(int x, bool wait = false);
     void LightEnable(bool enable);
+    /// TODO(Z04): прошивка импульс уже умеет. Хост кадр TCP не шлёт.
+    bool CommandLightPulse(double duration_us) override;
     bool HasFilm();
 
 private:

@@ -66,7 +66,13 @@ cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val) {
   int min_treshold = 100;
   int max_treshold = pix_max_val;
 
-  for( const auto &[cadr, expose]: cadres ){
+  for (const auto &[cadr, pulse_us] : cadres) {
+    // Вес — длительность импульса подсветки, не затвор камеры.
+    const double weight = pulse_us;
+    if (!(weight > 0.0)) {
+      ScanLogErrorF("hdr: exposure weight %.6g is not positive, frame skipped", weight);
+      continue;
+    }
     for(int y = 0; y < cadr.rows; ++y){
       for(int x = 0; x < cadr.cols; ++x){
         double pix_val = cadr.at<uint16_t>(y, x);
@@ -78,7 +84,7 @@ cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val) {
         if(pix_val > max_treshold && cnts.at<uint8_t>(y, x) != 0)
           continue;
 
-        res_pix = (pix_val / expose);
+        res_pix = (pix_val / weight);
         cnts.at<uint8_t>(y, x)++;
       }
     }
@@ -281,6 +287,9 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
   dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
   dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));
+  if (!params.image_comments.empty()) {
+    dataset->putAndInsertString(DCM_ImageComments, params.image_comments.c_str());
+  }
 
   const size_t pixel_count = static_cast<size_t>(rows) * static_cast<size_t>(cols);
   OFCondition status = dataset->putAndInsertUint16Array(
