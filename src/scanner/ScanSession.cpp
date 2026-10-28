@@ -103,6 +103,14 @@ bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
 
 bool ScanSession::Finish() { return Flush(); }
 
+bool ScanSession::HasOpenPixels() const { return m_film.HasContent() || m_split_at >= 0; }
+
+void ScanSession::Discard() {
+  m_split_at = -1;
+  m_open_abs_y = -1;
+  m_film.Reset();
+}
+
 bool ScanSession::WriteSegment(const cv::Mat &image) {
   if (image.empty() || image.rows > m_max_rows || image.cols > kMaxDicomDimension ||
       image.rows > kMaxDicomDimension) {

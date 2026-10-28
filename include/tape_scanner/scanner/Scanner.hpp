@@ -3,11 +3,16 @@
 #include "Camera.hpp"
 #include "Controller.hpp"
 #include "ScanGeometry.hpp"
+#include "ScanStop.hpp"
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <opencv2/core/types.hpp>
 #include <opencv2/opencv.hpp>
+#include <string>
 #include <thread>
+#include <utility>
 #include <unordered_map>
 
 class ScanSession;
@@ -21,6 +26,10 @@ public:
 
     void StartScan(const std::string& dst_scan_file_path, bool async = true);
     void StopScan();
+    /// Флаг отмены и ожидание потока не дольше stop_deadline. Не зависает в join.
+    tape_scanner::ScanStopResult RequestStop();
+    tape_scanner::ScanRunResult Result() const;
+    void SetStopSettings(tape_scanner::ScanStopSettings settings) { m_stop_settings = std::move(settings); }
     bool IsRunning();
 
     void AutoCalibrateCamera();
@@ -42,9 +51,12 @@ public:
 
 private:
     void WorkerLoop();
+    void RunWorker();
+    void FinishTerminal(tape_scanner::TerminalInput input);
+    tape_scanner::TerminalInput MakeInput(tape_scanner::ScanStopReason reason, std::string message) const;
+    void NoteFailure(tape_scanner::ScanStopReason reason, const std::string &message);
     bool WaitFilm();
     bool IsCanceled();
-    void Cancel();
     bool HasFilm();
     bool HasFilmInCamera();
     void GoCameraToCentre();
@@ -85,8 +97,20 @@ private:
     Camera& m_camera;
     std::unique_ptr<ScanSession> m_session;
     ScanGeometry m_geometry;
+    tape_scanner::ScanStopSettings m_stop_settings;
+    tape_scanner::ScanStopReason m_reason = tape_scanner::ScanStopReason::None;
+    std::string m_fail_message;
+    bool m_axes_live = false;
+    bool m_film_wait_timed_out = false;
+    std::atomic<bool> m_terminal_done{false};
+    mutable std::mutex m_wait_mu;
+    std::condition_variable m_worker_cv;
+    bool m_worker_active = false;
+    bool m_thread_finished = false;
+    std::thread::id m_worker_id;
+    tape_scanner::ScanRunResult m_result;
     std::atomic<bool> m_running = false;
-    bool m_foce_canceled_unsafe = false;
+    std::atomic<bool> m_operator_stop{false};
     int m_cur_camera_pos = -1;
     int m_cur_roller_pos = 0;
     int m_cur_dir = -1;

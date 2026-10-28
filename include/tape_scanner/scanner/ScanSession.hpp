@@ -37,6 +37,12 @@ public:
   /// Пишет хвост, если в нём есть пиксели. Пустой холст файл не создаёт и не затирает.
   bool Finish();
 
+  /// Есть тайлы, которые ещё не записаны в файл.
+  bool HasOpenPixels() const;
+
+  /// Сбрасывает открытый холст. Уже записанные сегменты не трогает и не удаляет.
+  void Discard();
+
   int SavedSegmentCount() const { return m_saved; }
   const std::string &StudyUid() const { return m_study_uid; }
   const std::string &SeriesUid() const { return m_series_uid; }

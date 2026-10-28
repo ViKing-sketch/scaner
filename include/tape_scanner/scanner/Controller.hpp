@@ -33,6 +33,8 @@ public:
     void SetAcceleration(int acceleration);
     void SetRollerSpeed(int speed = 0);
     void StopCameraMotor();
+    /// G0 STOP и G1 STOP. Не вызывает HOME и не сбрасывает счётчик роликов.
+    void HaltAxes();
     void StartRollers();
     void StopRollers();
     void ResetRollerPos();

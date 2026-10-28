@@ -19,7 +19,11 @@ Scanner::Scanner(Controller& controller, Camera& camera)
 }
 
 Scanner::~Scanner() {
-  StopScan();
+  m_operator_stop.store(true);
+  m_running.store(false);
+  if (m_thread && m_thread->joinable()) {
+    m_thread->join();
+  }
 }
 
 void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
@@ -29,14 +33,27 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
     wxLogWarning("Scanning already started!");
     return;
   }
-
-    StopScan();
+  if (m_thread && m_thread->joinable()) {
+    wxLogWarning("Previous scan is still stopping");
+    return;
+  }
 
     m_dst_scan_file_path = dst_scan_file_path;
     m_session = std::make_unique<ScanSession>(m_dst_scan_file_path, m_geometry);
-    m_running = true;
-    m_foce_canceled_unsafe = false;
+    m_operator_stop.store(false);
+    m_reason = tape_scanner::ScanStopReason::None;
+    m_fail_message.clear();
+    m_axes_live = false;
+    m_film_wait_timed_out = false;
+    m_terminal_done.store(false);
+    m_result = {};
     m_cur_dir = -1;
+    {
+      std::lock_guard lock(m_wait_mu);
+      m_worker_active = true;
+      m_thread_finished = false;
+    }
+    m_running.store(true);
 
     if (async) {
         m_thread = std::make_unique<std::thread>(&Scanner::WorkerLoop, this);
@@ -47,12 +64,60 @@ void Scanner::StartScan(const std::string& dst_scan_file_path, bool async) {
 
 void Scanner::StopScan() {
   wxLogMessage("StopScan requested");
-  m_running = false;
-  if (m_thread && m_thread->joinable()) {
-    wxLogMessage("Wait for stop thread");
-    m_thread->join();
+  const tape_scanner::ScanStopResult stop = RequestStop();
+  if (stop.timed_out) {
+    wxLogWarning("Stop is still waiting for the scan thread");
+    return;
   }
   wxLogMessage("Scan stopped");
+}
+
+tape_scanner::ScanStopResult Scanner::RequestStop() {
+  m_operator_stop.store(true);
+  m_running.store(false);
+
+  tape_scanner::ScanStopResult result;
+  result.accepted = true;
+  if (m_worker_id == std::this_thread::get_id()) {
+    result.reason = tape_scanner::ScanStopReason::OperatorStop;
+    result.status = tape_scanner::ScanRunStatus::Partial;
+    return result;
+  }
+
+  std::unique_lock lock(m_wait_mu);
+  if (!m_worker_active) {
+    result.reason = m_result.reason == tape_scanner::ScanStopReason::None
+                        ? tape_scanner::ScanStopReason::OperatorStop
+                        : m_result.reason;
+    result.status = m_result.status;
+    result.run = m_result;
+    return result;
+  }
+
+  const bool finished = m_worker_cv.wait_for(lock, m_stop_settings.stop_deadline, [this] {
+    return m_thread_finished;
+  });
+  if (!finished) {
+    result.timed_out = true;
+    result.reason = tape_scanner::ScanStopReason::StopTimeout;
+    result.status = tape_scanner::ScanRunStatus::Fault;
+    return result;
+  }
+  lock.unlock();
+  if (m_thread && m_thread->joinable()) {
+    m_thread->join();
+    m_thread.reset();
+  }
+  lock.lock();
+  result.reason = m_result.reason;
+  result.status = m_result.status;
+  result.run = m_result;
+  return result;
+}
+
+tape_scanner::ScanRunResult Scanner::Result() const {
+  std::lock_guard lock(m_wait_mu);
+  return m_result;
 }
 
 bool Scanner::IsRunning() {
@@ -144,69 +209,204 @@ void Scanner::CalibrateScanner() {
 }
 
 void Scanner::WorkerLoop() {
-  // if (!wxIsMainThread()) {
-  //     wxLogStderr* logTarget = new wxLogStderr();
-  //     wxLog::SetThreadActiveTarget(logTarget);
-  //     wxLog::SetTimestamp("[%H:%M:%S,%l]");
-  // }
+  m_worker_id = std::this_thread::get_id();
+  try {
+    RunWorker();
+  } catch (const std::exception &ex) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::Exception, ex.what()));
+  } catch (...) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::Exception, "unknown exception"));
+  }
+  {
+    std::lock_guard lock(m_wait_mu);
+    m_thread_finished = true;
+    m_worker_active = false;
+    m_running.store(false);
+  }
+  m_worker_cv.notify_all();
+}
 
-  m_controller.GoCameraToHome(true);
-  if (!WaitFilm()) {
-    if (m_session) {
-      m_session->Finish();
-    }
+void Scanner::RunWorker() {
+  if (IsCanceled()) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::OperatorStop, "stop before motion"));
     return;
   }
 
-  if(!m_light_only_when_capture)
+  // Старт по-прежнему ищет ноль каретки. Это не хвост после отмены.
+  m_axes_live = true;
+  m_controller.GoCameraToHome(true);
+  if (IsCanceled()) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::OperatorStop, "stop during reference"));
+    return;
+  }
+
+  if (!WaitFilm()) {
+    const auto reason = m_film_wait_timed_out ? tape_scanner::ScanStopReason::FilmTimeout
+                                              : tape_scanner::ScanStopReason::OperatorStop;
+    FinishTerminal(MakeInput(reason, m_film_wait_timed_out ? "film wait timed out"
+                                                          : "stop while waiting for film"));
+    return;
+  }
+  if (IsCanceled()) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::OperatorStop, "stop"));
+    return;
+  }
+
+  if (!m_light_only_when_capture) {
     m_controller.LightEnable(true);
+  }
 
   ResetRollersPosition();
   m_controller.GoRollersTo(16000, true);
-  // m_camera.SetExpose(DetectOptimalExpose());
+  if (m_reason != tape_scanner::ScanStopReason::None) {
+    FinishTerminal(MakeInput(m_reason, m_fail_message));
+    return;
+  }
+  if (IsCanceled()) {
+    FinishTerminal(MakeInput(tape_scanner::ScanStopReason::OperatorStop, "stop during approach"));
+    return;
+  }
+
   GoCameraToStartPosition();
 
-  while (!IsCanceled()) {
+  while (!IsCanceled() && m_reason == tape_scanner::ScanStopReason::None) {
     CaptureCadr();
-    // DebugShowCurFilm();
+    if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+      break;
+    }
     GoCameraToNextPosition();
   }
 
-  if(m_light_only_when_capture)
-    m_controller.LightEnable(false);
+  auto reason = m_reason;
+  if (reason == tape_scanner::ScanStopReason::None) {
+    reason = tape_scanner::ScanStopReason::OperatorStop;
+  }
+  FinishTerminal(MakeInput(reason, m_fail_message));
+}
 
-  if (!m_session || !m_session->Finish()) {
-    wxLogError("DICOM segment was not saved");
-  } else if (m_session->SavedSegmentCount() == 0) {
-    wxLogMessage("Scan finished with no pixels to save");
-  } else {
-    wxLogMessage(wxString::Format("DICOM segments saved: %i", m_session->SavedSegmentCount()));
+tape_scanner::TerminalInput Scanner::MakeInput(tape_scanner::ScanStopReason reason,
+                                              std::string message) const {
+  tape_scanner::TerminalInput input;
+  input.reason = reason;
+  input.message = std::move(message);
+  input.hold_motors = m_stop_settings.hold_motors;
+  input.save_captured = m_stop_settings.save_captured;
+  input.controller_link_up = true;
+  input.axes_live = m_axes_live;
+  input.completeness_proven = false;
+  input.finish_ok = true;
+  if (m_session) {
+    input.confirmed_tiles = m_session->SavedSegmentCount();
+    input.open_tiles = m_session->HasOpenPixels() ? 1 : 0;
+  }
+  return input;
+}
+
+void Scanner::FinishTerminal(tape_scanner::TerminalInput input) {
+  if (m_terminal_done.exchange(true)) {
+    return;
   }
 
-  m_cur_roller_pos += 40000;
-  m_controller.GoRollersTo(m_cur_roller_pos, true);
+  auto plan = tape_scanner::PlanTerminal(input);
+  try {
+    if (plan.stop_axes) {
+      m_controller.HaltAxes();
+    }
+  } catch (const std::exception &ex) {
+    wxLogError(wxString::Format("Halt failed: %s", wxString(ex.what())));
+  }
+  try {
+    if (plan.home_axes) {
+      m_controller.GoCameraToHome(true);
+    }
+  } catch (const std::exception &ex) {
+    wxLogError(wxString::Format("Home after link loss failed: %s", wxString(ex.what())));
+  }
+  try {
+    // Выдача не выполняется сама: PlanTerminal не ставит eject_film
+    // ни для отмены, ни для аварии, ни для конца носителя.
+    if (plan.eject_film) {
+      m_cur_roller_pos += tape_scanner::kFilmEjectSteps;
+      m_controller.GoRollersTo(m_cur_roller_pos, true);
+    }
+  } catch (const std::exception &ex) {
+    wxLogError(wxString::Format("Eject failed: %s", wxString(ex.what())));
+  }
+  try {
+    if (plan.light_off) {
+      m_controller.LightEnable(false);
+    }
+  } catch (const std::exception &ex) {
+    wxLogError(wxString::Format("Light off failed: %s", wxString(ex.what())));
+  }
 
-  m_controller.GoCameraToHome(true);
+  bool finish_ok = true;
+  int committed = input.confirmed_tiles;
+  if (m_session) {
+    try {
+      if (plan.save_open) {
+        finish_ok = m_session->Finish();
+      } else {
+        m_session->Discard();
+      }
+      committed = m_session->SavedSegmentCount();
+    } catch (const std::exception &ex) {
+      finish_ok = false;
+      wxLogError(wxString::Format("Scan save failed: %s", wxString(ex.what())));
+    }
+  }
+  tape_scanner::ApplyFinishResult(plan, input.reason, finish_ok, committed);
 
-  m_running = false;
+  tape_scanner::ScanRunResult result;
+  result.status = plan.status;
+  result.reason = input.reason;
+  result.message = input.message;
+  result.confirmed_tiles = committed;
+  result.open_tiles = (m_session && m_session->HasOpenPixels()) ? 1 : 0;
+  result.claim_success = plan.claim_success;
+  {
+    std::lock_guard lock(m_wait_mu);
+    m_result = result;
+  }
 
-  wxLogMessage("Scan finished");
+  const wxString reason_text(tape_scanner::ScanStopReasonText(input.reason));
+  if (plan.claim_success) {
+    wxLogMessage(wxString::Format("Scan completed, segments: %d", committed));
+  } else if (plan.status == tape_scanner::ScanRunStatus::Partial) {
+    wxLogMessage(wxString::Format("Scan partial (%s), saved segments: %d", reason_text, committed));
+  } else if (plan.status == tape_scanner::ScanRunStatus::Fault) {
+    wxLogError(wxString::Format("Scan fault (%s), saved segments: %d", reason_text, committed));
+  } else {
+    wxLogMessage(wxString::Format("Scan ended (%s)", reason_text));
+  }
+}
+
+void Scanner::NoteFailure(tape_scanner::ScanStopReason reason, const std::string &message) {
+  if (m_reason == tape_scanner::ScanStopReason::None) {
+    m_reason = reason;
+    m_fail_message = message;
+  }
+  m_running.store(false);
+  wxLogError(wxString::Format("Scan: %s", wxString(message.c_str())));
 }
 
 bool Scanner::WaitFilm() {
-    while (!HasFilm()) {
-        if (IsCanceled())
-            return false;
+  const auto deadline = std::chrono::steady_clock::now() + m_stop_settings.film_wait;
+  while (!HasFilm()) {
+    if (IsCanceled()) {
+      return false;
     }
-    return true;
+    if (std::chrono::steady_clock::now() >= deadline) {
+      m_film_wait_timed_out = true;
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return true;
 }
 
 bool Scanner::IsCanceled() {
-    return m_foce_canceled_unsafe || !m_running;
-}
-
-void Scanner::Cancel() {
-    m_foce_canceled_unsafe = true;
+  return m_operator_stop.load() || !m_running.load();
 }
 
 bool Scanner::HasFilm() {
@@ -218,7 +418,11 @@ bool Scanner::HasFilmInCamera() {
 }
 
 void Scanner::GoCameraToStartPosition() {
+    if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+      return;
+    }
     m_cur_camera_pos = m_coefs.camera_max_pos;
+    m_axes_live = true;
     m_controller.GoCameraTo(m_cur_camera_pos, true);
 
     ResetRollersPosition();
@@ -237,13 +441,19 @@ void Scanner::GoCameraToCentre() {
 }
 
 void Scanner::GoFilmToNextRow() {
+    if (IsCanceled()) {
+      if (m_reason == tape_scanner::ScanStopReason::None) {
+        m_reason = tape_scanner::ScanStopReason::OperatorStop;
+      }
+      return;
+    }
     if (m_calibrate_running && m_cur_roller_pos >= m_calibrates.iter_cnt) {
-        Cancel();
+        m_reason = tape_scanner::ScanStopReason::EndOfCalibration;
         return;
     }
 
     if (!HasFilm()) {
-        Cancel();
+        m_reason = tape_scanner::ScanStopReason::EndOfMedia;
         return;
     }
 
@@ -256,6 +466,9 @@ void Scanner::GoFilmToNextRow() {
 }
 
 void Scanner::GoCameraToNextPosition() {
+    if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+      return;
+    }
     int old_pos = m_cur_camera_pos;
     m_cur_camera_pos += m_cur_dir * m_coefs.camera_step_size;
 
@@ -265,23 +478,43 @@ void Scanner::GoCameraToNextPosition() {
         m_cur_camera_pos = std::min(m_cur_camera_pos, m_coefs.camera_max_pos);
         m_cur_camera_pos = std::max(m_cur_camera_pos, m_coefs.camera_min_pos);
 
+        m_axes_live = true;
         m_controller.GoCameraTo(m_cur_camera_pos, true);
+        if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+          return;
+        }
         CaptureCadr();
+        if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+          return;
+        }
 
         GoFilmToNextRow();
+        if (m_reason != tape_scanner::ScanStopReason::None || IsCanceled()) {
+          return;
+        }
         if (HasFilm())
             CaptureCadr();
+        if (m_reason != tape_scanner::ScanStopReason::None || IsCanceled()) {
+          return;
+        }
 
         m_cur_camera_pos += m_cur_dir * m_coefs.camera_step_size;
     }
-    if (old_pos != m_cur_camera_pos)
+    if (old_pos != m_cur_camera_pos) {
+        m_axes_live = true;
         m_controller.GoCameraTo(m_cur_camera_pos, true);
+    }
 }
 
 void Scanner::CaptureCadr(bool need_save) {
+  (void)need_save;
+  if (IsCanceled() || m_reason != tape_scanner::ScanStopReason::None) {
+    return;
+  }
   wxLogMessage("CaptureCadr start");
 
   cv::Mat cadr; // result
+  try {
   if (!m_calibrate_running &&
       m_calibrates.coefs_by_pos.contains(m_cur_camera_pos)) {
 
@@ -298,36 +531,37 @@ void Scanner::CaptureCadr(bool need_save) {
     cv::Mat calibr_cadr = cadr_with_exp.mul(flat);
 
     calibr_cadr.convertTo(cadr, CV_16UC1, 65535.0);
-  } else {
-    wxLogMessage("WO calibrate");
+  } else if (!m_calibrate_running) {
+    NoteFailure(tape_scanner::ScanStopReason::MissingCalibration,
+                "calibration is missing for the camera position");
+    return;
   }
 
   if (!m_calibrate_running) {
     if (cadr.empty() || cadr.type() != CV_16UC1) {
-      wxLogError("CaptureCadr: empty or unexpected frame");
-    } else {
-      auto &b = m_coefs.border;
-      cv::Rect after_croped = {b.x, b.y, cadr.cols - b.x - b.width, cadr.rows - b.y - b.height};
-      const bool crop_inside = after_croped.width > 0 && after_croped.height > 0 &&
-                               after_croped.x + after_croped.width <= cadr.cols &&
-                               after_croped.y + after_croped.height <= cadr.rows;
-      if (!crop_inside) {
-        wxLogError("CaptureCadr: crop is outside the frame");
-      } else if (!m_session) {
-        wxLogError("CaptureCadr: scan session is not started");
-      } else {
-        try {
-          // Биннинг после кропа и до сшивки. Шаги моторов не меняются:
-          // поле кадра то же, мельче только сохранённая сетка.
-          cv::Mat binned = ApplyScanBinning(cadr(after_croped), m_geometry.bin);
-          const cv::Point cur_pixel_coord = GetCurPixelCoords();
-          if (binned.empty() || !m_session->PushRegion(binned, cur_pixel_coord.x, cur_pixel_coord.y)) {
-            wxLogError("CaptureCadr: failed to bin or push the tile");
-          }
-        } catch (const std::exception &e) {
-          wxLogError(wxString::Format("CaptureCadr: %s", wxString(e.what())));
-        }
-      }
+      NoteFailure(tape_scanner::ScanStopReason::EmptyFrame, "empty or unexpected frame");
+      return;
+    }
+    auto &b = m_coefs.border;
+    cv::Rect after_croped = {b.x, b.y, cadr.cols - b.x - b.width, cadr.rows - b.y - b.height};
+    const bool crop_inside = after_croped.width > 0 && after_croped.height > 0 &&
+                             after_croped.x + after_croped.width <= cadr.cols &&
+                             after_croped.y + after_croped.height <= cadr.rows;
+    if (!crop_inside) {
+      NoteFailure(tape_scanner::ScanStopReason::DeviceFault, "crop is outside the frame");
+      return;
+    }
+    if (!m_session) {
+      NoteFailure(tape_scanner::ScanStopReason::DeviceFault, "scan session is not started");
+      return;
+    }
+    // Биннинг после кропа и до сшивки. Шаги моторов не меняются:
+    // поле кадра то же, мельче только сохранённая сетка.
+    cv::Mat binned = ApplyScanBinning(cadr(after_croped), m_geometry.bin);
+    const cv::Point cur_pixel_coord = GetCurPixelCoords();
+    if (binned.empty() || !m_session->PushRegion(binned, cur_pixel_coord.x, cur_pixel_coord.y)) {
+      NoteFailure(tape_scanner::ScanStopReason::PushFailed, "failed to bin or push the tile");
+      return;
     }
   } else {
     if(m_light_only_when_capture)
@@ -337,6 +571,12 @@ void Scanner::CaptureCadr(bool need_save) {
 
     if(m_light_only_when_capture)
       m_controller.LightEnable(false);
+  }
+  } catch (const std::exception &e) {
+    NoteFailure(m_calibrate_running ? tape_scanner::ScanStopReason::Exception
+                                    : tape_scanner::ScanStopReason::HdrFailed,
+                e.what());
+    return;
   }
 
   wxLogMessage(wxString::Format("CaptureCadr done"));
