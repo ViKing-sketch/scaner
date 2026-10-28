@@ -44,6 +44,31 @@ if(MSVC)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
 
+# Z02: контракты ICamera/IController и симуляторы. Без wxWidgets и SDK камеры.
+# Пресеты и опции BUILD_* остаются задачей сборки.
+add_library(tape_scanner_adapters STATIC
+    src/adapters/camera_simulator.cpp
+    src/adapters/controller_simulator.cpp
+)
+target_include_directories(tape_scanner_adapters PUBLIC "include/")
+target_compile_features(tape_scanner_adapters PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(tape_scanner_adapters PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(tape_scanner_adapters PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+find_package(Threads REQUIRED)
+add_executable(test_adapters tests/test_adapters.cpp)
+target_link_libraries(test_adapters PRIVATE tape_scanner_adapters Threads::Threads)
+target_compile_features(test_adapters PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(test_adapters PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(test_adapters PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME test_adapters COMMAND test_adapters)
+
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
 find_package(glm CONFIG QUIET)
@@ -56,6 +81,8 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
         "src/*.c*"
     )
     list(FILTER sources EXCLUDE REGEX ".*main\\.cpp$")
+    # Симуляторы Z02 собираются отдельной целью и не входят в GUI/SDK-библиотеку.
+    list(FILTER sources EXCLUDE REGEX ".*/adapters/.*")
 
     file(GLOB_RECURSE headers
         "include/*.h*"
