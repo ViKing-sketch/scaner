@@ -86,6 +86,11 @@ void Controller::StopCameraMotor() {
     SendData("G0 STOP");
 }
 
+void Controller::HaltAxes() {
+    StopCameraMotor();
+    SendData("G1 STOP");
+}
+
 void Controller::StartRollers() {
     SendData("G1 X500000");
 }

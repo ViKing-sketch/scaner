@@ -679,7 +679,15 @@ void MyMainWindow::OnRulerPixels(bool along_x, double pixels) {
 }
 
 void MyMainWindow::OnScanStop( wxCommandEvent& event ) {
-  m_scanner->StopScan();
+  (void)event;
+  const tape_scanner::ScanStopResult stop = tape_scanner::RequestScanStop(m_scanner.get());
+  if (!stop.accepted) {
+    wxLogWarning("Stop rejected: scanner is not created");
+    return;
+  }
+  if (stop.timed_out) {
+    wxLogWarning("Stop is still waiting for the scan thread");
+  }
 }
 
 void MyMainWindow::OnSaveFrameAsRGB8bitmap( wxCommandEvent& event ) {
@@ -1485,6 +1493,8 @@ bool MyMainWindow::InitScanner()
   }
 
   m_scanner = std::make_unique<Scanner>(*m_controller, *m_camera);
+  m_scanner->SetStopSettings(tape_scanner::ScanStopSettingsFromText(
+      settings.get("link").get("hold_motors"), settings.get("link").get("save_captured")));
 
   return true;
 }

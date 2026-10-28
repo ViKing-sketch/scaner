@@ -69,6 +69,29 @@ else()
 endif()
 add_test(NAME test_adapters COMMAND test_adapters)
 
+# Z05: останов и Partial/Fault. Тот же ctest, без wxWidgets и SDK камеры.
+add_library(tape_scanner_scan_stop STATIC
+    src/scanner/ScanDirector.cpp
+)
+target_include_directories(tape_scanner_scan_stop PUBLIC "include/")
+target_compile_features(tape_scanner_scan_stop PUBLIC cxx_std_20)
+target_link_libraries(tape_scanner_scan_stop PUBLIC tape_scanner_adapters)
+if(MSVC)
+    target_compile_options(tape_scanner_scan_stop PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(tape_scanner_scan_stop PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(test_scan_stop tests/test_scan_stop.cpp)
+target_link_libraries(test_scan_stop PRIVATE tape_scanner_scan_stop Threads::Threads)
+target_compile_features(test_scan_stop PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(test_scan_stop PRIVATE /W4 /utf-8)
+else()
+    target_compile_options(test_scan_stop PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME test_scan_stop COMMAND test_scan_stop)
+
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
 find_package(glm CONFIG QUIET)
@@ -81,8 +104,9 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
         "src/*.c*"
     )
     list(FILTER sources EXCLUDE REGEX ".*main\\.cpp$")
-    # Симуляторы Z02 собираются отдельной целью и не входят в GUI/SDK-библиотеку.
+    # Симуляторы Z02 и прогон Z05 собираются отдельными целями и не входят в GUI/SDK-библиотеку.
     list(FILTER sources EXCLUDE REGEX ".*/adapters/.*")
+    list(FILTER sources EXCLUDE REGEX ".*/ScanDirector\\.cpp$")
 
     file(GLOB_RECURSE headers
         "include/*.h*"
