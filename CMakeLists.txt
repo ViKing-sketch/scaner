@@ -13,9 +13,11 @@ if(NOT DCMTK_FOUND)
 endif()
 
 add_library(tape_scanner_scan STATIC
+    src/scanner/FileCommit.cpp
     src/scanner/Utils.cpp
     src/scanner/Film.cpp
     src/scanner/Region.cpp
+    src/scanner/SessionStore.cpp
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
     src/scanner/WindowLevel.cpp
@@ -43,6 +45,14 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+# T25: каталог сеанса, manifest и отказ от перезаписи. Камера и SDK не нужны.
+add_executable(test_session_commit tests/test_session_commit.cpp)
+target_link_libraries(test_session_commit PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_session_commit PRIVATE /utf-8)
+endif()
+add_test(NAME test_session_commit COMMAND test_session_commit)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
@@ -159,5 +169,5 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
 else()
     message(STATUS
         "UI scanner target is skipped: wxWidgets, OpenGL, glm or the camera SDK is missing. "
-        "test_scan_geometry still builds and does not need the scanner to be connected.")
+        "test_scan_geometry and test_session_commit still build and do not need the scanner to be connected.")
 endif()
