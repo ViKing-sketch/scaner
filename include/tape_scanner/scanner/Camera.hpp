@@ -6,6 +6,7 @@
 #include <wx/msw/bitmap.h>
 
 #include <camera_api/CameraApi.h>
+#include <tape_scanner/scanner/ExposurePulse.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -29,10 +30,12 @@ public:
     uint8_t* GetCadr(tSdkFrameHead& frame_info, double expose = 0.0);
     void SaveCadrTo(const std::string& dest_path);
     wxBitmap Snapshot(double expose = 0.0);
-    /// expose — запрошенные микросекунды. 0 оставляет текущую команду камеры.
-    /// log_exposure пишет строку таблицы шагов. Эффективное время в статистике кадра есть всегда, когда expose != 0.
-    cv::Mat GetMat(double expose = 0.0, bool log_exposure = true);
-    cv::Mat GetCadrWithExposes(std::vector<float> exposes);
+    /// shutter_us — затвор камеры, микросекунды. 0 оставляет текущую уставку.
+    /// Запас к импульсу сюда не добавляется: его уже прибавил PlanExposure.
+    cv::Mat GetMat(double shutter_us = 0.0, bool log_shutter = true);
+    /// pulse_targets_us — цели T. Затвор кадра = T + запас. Вес HDR = T.
+    /// light == nullptr не шлёт импульс (нет контроллера). Иначе команда идёт в IControllerPulse.
+    cv::Mat GetCadrWithExposes(std::vector<float> pulse_targets_us, IControllerPulse *light = nullptr);
     void CalibrateResponses();
 
   private:

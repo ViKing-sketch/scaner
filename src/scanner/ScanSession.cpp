@@ -1,7 +1,7 @@
 #include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 
-#include <tape_scanner/scanner/ExposureSteps.hpp>
+#include <tape_scanner/scanner/ExposurePulse.hpp>
 #include <tape_scanner/scanner/ScanLog.hpp>
 
 #include <dcmtk/config/osconfig.h>
@@ -51,8 +51,7 @@ ScanSession::ScanSession(std::string chosen_path, ScanGeometry geometry, int max
       m_study_uid(MakeUid(SITE_STUDY_UID_ROOT)), m_series_uid(MakeUid(SITE_SERIES_UID_ROOT)),
       m_max_rows(max_segment_rows > 0 ? max_segment_rows : kMaxDicomDimension) {
   m_metadata_path = MakeSessionMetadataPath(m_chosen_path);
-  m_exposure.table_placeholder = true;
-  m_exposure.table_note = kExposureStepTablePlaceholderNote;
+  m_exposure.note = kExposurePulseNote;
 }
 
 bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
@@ -121,17 +120,13 @@ bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
   return true;
 }
 
-void ScanSession::RecordRequestedExposure(double requested_us) {
-  RecordRequestedExposure(requested_us, ActiveExposureStepTable());
-}
-
-void ScanSession::RecordRequestedExposure(double requested_us, const ExposureStepTable &table) {
-  const ExposureMatch match = table.Match(requested_us, true);
-  m_exposure.exposures.push_back(ExposureObservation{match.requested_us, match.effective_us, match.step_index});
-  m_exposure.table_note = table.Note().empty() ? std::string(kExposureStepTablePlaceholderNote) : table.Note();
-  if (!table.IsPlaceholder()) {
-    m_exposure.table_placeholder = false;
+void ScanSession::RecordExposure(const ExposureShot &shot) {
+  if (!shot.planned || !(shot.pulse_us > 0.0) || !(shot.shutter_us >= shot.pulse_us)) {
+    ScanLogError("ScanSession: exposure plan rejected; shutter must cover the light pulse");
+    return;
   }
+  ScanLogMessageF("Exposure recorded: pulse %.6g us (effective), shutter %.6g us", shot.pulse_us, shot.shutter_us);
+  m_exposure.exposures.push_back(shot);
   WriteExposureMetadata();
 }
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <tape_scanner/scanner/ExposureSteps.hpp>
+#include <tape_scanner/scanner/ExposurePulse.hpp>
 #include <tape_scanner/scanner/Film.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 
@@ -48,12 +48,10 @@ public:
   const std::vector<std::string> &SavedPaths() const { return m_paths; }
 
   /**
-   * Запрошенные микросекунды переводятся таблицей шагов в эффективные,
-   * пишутся в журнал и в файл метаданных сессии. Пока таблица — заглушка.
-   * PLACEHOLDER: awaiting Max's measured exposure step table. Not a calibration.
+   * Пишет импульс подсветки как эффективную экспозицию и затвор камеры рядом.
+   * Непринятый план в файл не попадает.
    */
-  void RecordRequestedExposure(double requested_us);
-  void RecordRequestedExposure(double requested_us, const ExposureStepTable &table);
+  void RecordExposure(const ExposureShot &shot);
   const SessionExposureMetadata &ExposureMetadata() const { return m_exposure; }
   const std::string &ExposureMetadataPath() const { return m_metadata_path; }
 

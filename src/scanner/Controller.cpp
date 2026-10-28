@@ -114,6 +114,18 @@ void Controller::LightEnable(bool enable) {
     SendCommand(std::string("LIGHT ") + (enable ? "ON" : "OFF"), 0, 100);
 }
 
+bool Controller::CommandLightPulse(double duration_us) {
+    // TODO(Z04): firmware already has the light pulse. Do not invent the TCP
+    // frame here. LIGHT ON/OFF is not a timed pulse.
+    if (!(duration_us > 0.0)) {
+        wxLogError("Light pulse duration must be positive");
+        return false;
+    }
+    wxLogMessage("TODO(Z04): firmware already has the light pulse; host command for %g us is not sent",
+                 duration_us);
+    return false;
+}
+
 bool Controller::HasFilm() {
     SendData("FILM");
     auto response = ReadData(5);

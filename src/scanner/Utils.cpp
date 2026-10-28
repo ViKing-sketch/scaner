@@ -1,5 +1,4 @@
 #include <tape_scanner/scanner/Utils.hpp>
-#include <tape_scanner/scanner/ExposureSteps.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
@@ -55,12 +54,9 @@ double safeStrToDouble(const std::string &str_double)
   return res;
 }
 
-cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val,
-            const ExposureStepTable *exposure_steps) {
+cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val) {
   assert(cadres.size());
   assert(cadres[0].first.type() == CV_16UC1);
-
-  const ExposureStepTable &steps = exposure_steps != nullptr ? *exposure_steps : ActiveExposureStepTable();
 
   cv::Size res_size = cadres[0].first.size();
   cv::Mat res = cv::Mat::zeros(res_size, CV_64FC1);
@@ -70,9 +66,9 @@ cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val,
   int min_treshold = 100;
   int max_treshold = pix_max_val;
 
-  for (const auto &[cadr, requested_us] : cadres) {
-    // Вес — эффективная экспозиция шага, не запрошенные микросекунды.
-    const double weight = steps.Match(requested_us, true).effective_us;
+  for (const auto &[cadr, pulse_us] : cadres) {
+    // Вес — длительность импульса подсветки, не затвор камеры.
+    const double weight = pulse_us;
     if (!(weight > 0.0)) {
       ScanLogErrorF("hdr: exposure weight %.6g is not positive, frame skipped", weight);
       continue;

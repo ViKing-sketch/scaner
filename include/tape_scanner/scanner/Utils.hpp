@@ -9,16 +9,11 @@ int safeStrToInt(const std::string &str_num);
 
 double safeStrToDouble(const std::string &str_double);
 
-class ExposureStepTable;
-
 /**
- * Сведение кадров. Второе число пары — запрошенная экспозиция, микросекунды.
- * Вес пикселя — эффективное время из таблицы шагов, не запрошенное число.
- * exposure_steps == nullptr берёт заглушку ActiveExposureStepTable().
- * PLACEHOLDER: awaiting Max's measured exposure step table. Not a calibration.
+ * Сведение кадров. Второе число пары — длительность импульса подсветки, микросекунды.
+ * Это эффективная экспозиция. Затвор камеры в вес не входит.
  */
-cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val = 65535,
-            const ExposureStepTable *exposure_steps = nullptr);
+cv::Mat hdr(std::vector<std::pair<cv::Mat, double>> cadres, int pix_max_val = 65535);
 
 cv::Mat readMatFromFile(std::string key, std::string file_name = "test.xml");
 
