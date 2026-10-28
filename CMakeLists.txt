@@ -19,6 +19,7 @@ add_library(tape_scanner_scan STATIC
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
     src/scanner/WindowLevel.cpp
+    src/scanner/SensorCodes.cpp
 )
 target_include_directories(tape_scanner_scan PUBLIC "include/")
 target_link_libraries(tape_scanner_scan PUBLIC ${OpenCV_LIBS})
@@ -43,6 +44,16 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+add_executable(test_sensor_codes tests/test_sensor_codes.cpp)
+target_link_libraries(test_sensor_codes PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_sensor_codes PRIVATE /utf-8)
+endif()
+target_compile_definitions(test_sensor_codes PRIVATE
+    "TAPE_SCANNER_CAMERA_CPP=\"${CMAKE_CURRENT_SOURCE_DIR}/src/scanner/Camera.cpp\""
+    "TAPE_SCANNER_SENSOR_CPP=\"${CMAKE_CURRENT_SOURCE_DIR}/src/scanner/SensorCodes.cpp\"")
+add_test(NAME test_sensor_codes COMMAND test_sensor_codes)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
@@ -159,5 +170,5 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
 else()
     message(STATUS
         "UI scanner target is skipped: wxWidgets, OpenGL, glm or the camera SDK is missing. "
-        "test_scan_geometry still builds and does not need the scanner to be connected.")
+        "test_scan_geometry and test_sensor_codes still build and do not need the scanner to be connected.")
 endif()

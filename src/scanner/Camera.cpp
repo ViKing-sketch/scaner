@@ -1,5 +1,6 @@
 #include "tape_scanner/scanner/Utils.hpp"
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/SensorCodes.hpp>
 #include <opencv2/photo.hpp>
 
 namespace {
@@ -100,11 +101,15 @@ uint8_t* Camera::GetCadr(tSdkFrameHead& frame_info, double expose) {
 
     unpack_raw_12(raw_data, (uint16_t*)this->m_frame_buffer, frame_info.iWidth, frame_info.iHeight);
 
+    // Отсчёты сенсора остаются как распакованы. Покадровая кривая не применяется.
     cv::Mat unpacked(frame_info.iHeight, frame_info.iWidth, CV_16UC1, this->m_frame_buffer);
-    unpacked -= 18; // Dark
-    unpacked *= (65536/3800.0);
-    // memcpy(unpacked.data, this->m_frame_buffer, unpacked.total() * unpacked.elemSize());
-    cv::imwrite("unpacked.png", unpacked);
+    cv::Mat kept = RetainRawSensorCodes(unpacked);
+    if (kept.data != unpacked.data) {
+      if (kept.type() != unpacked.type() || kept.size() != unpacked.size()) {
+        throw std::runtime_error("RetainRawSensorCodes changed the frame shape");
+      }
+      kept.copyTo(unpacked);
+    }
 
     // memcpy(this->m_frame_buffer, raw_data, frame_info.iWidth * frame_info.iHeight * BYTES_PEER_PIXEL);
     CameraReleaseImageBuffer(this->m_h_camera, raw_data);
@@ -298,16 +303,8 @@ void Camera::InitResponses()
 }
 
 cv::Mat Camera::ToRadiance(std::vector<cv::Mat> imgs_16, std::vector<float> exposes) {
-  cv::Mat img_32f;
-  auto merger = cv::createMergeDebevec();
-  if (!m_responses.empty()) {
-    merger->process(imgs_16, img_32f, {exposes}, m_responses);
-  } else {
-    wxLogMessage("ToRadiance without responses!");
-    merger->process(imgs_16, img_32f, {exposes});
-  }
-
-  return img_32f;
+  // Кривая отклика не применяется: сенсор линейный, слияние — код/экспозиция.
+  return MergeLinearExposures(imgs_16, exposes);
 }
 
 
