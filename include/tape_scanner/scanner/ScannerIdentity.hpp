@@ -35,7 +35,7 @@ std::string DicomAcceptanceDate(const std::string &text);
 
 ScannerIdentity IdentityFromSettings(const SettingsLookup &lookup);
 
-/// bin и постоянный шаг pixel_um_x / pixel_um_y. Шаг из bin не восстанавливается.
+/// bin и базовый шаг pixel_um_x / pixel_um_y. В DICOM шаг умножается на bin по осям.
 ScanGeometry GeometryFromSettings(const SettingsLookup &lookup);
 
 /// Читает settings.ini. false — файл не открылся; geometry и identity тогда не меняются.

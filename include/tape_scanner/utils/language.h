@@ -407,7 +407,7 @@ private:
             wxT("Apply Y"),
             wxT("Pick X"),
             wxT("Pick Y"),
-            wxT("Pixel pitch is constant and is not divided by bin."),
+            wxT("Written pixel spacing is this pitch times bin."),
         },
         {
             //
@@ -623,7 +623,7 @@ private:
             wxT("Записать Y"),
             wxT("Указать X"),
             wxT("Указать Y"),
-            wxT("Шаг пикселя постоянный и на bin не делится."),
+            wxT("В файл пишется этот шаг, умноженный на bin."),
     },
     };
 };

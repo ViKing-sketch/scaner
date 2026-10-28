@@ -303,9 +303,9 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertUint16(DCM_HighBit, 15);
   dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
   dataset->putAndInsertString(DCM_PixelSpacing, spacing.c_str());
-  // Шаг — постоянная из настроек. Imager Pixel Spacing (0018,1164) этот писатель
-  // раньше не заполнял, поэтому тег не добавляется. Точный тег шага считается
-  // Pixel Spacing (0028,0030), пока Макс не подтвердит иное.
+  // Шаг в параметрах уже базовый × bin. Imager Pixel Spacing (0018,1164) этот
+  // писатель раньше не заполнял, поэтому тег не добавляется. Точный тег шага
+  // считается Pixel Spacing (0028,0030), пока Макс не подтвердит иное.
   WriteScannerIdentity(dataset, params.identity);
   dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
   dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));

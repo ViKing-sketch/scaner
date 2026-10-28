@@ -44,6 +44,9 @@ public:
   const std::string &StudyUid() const { return m_study_uid; }
   const std::string &SeriesUid() const { return m_series_uid; }
   const ScanGeometry &Geometry() const { return m_geometry; }
+  /// Метаданные сессии: шаг, который пишется в Pixel Spacing каждого сегмента.
+  double RowSpacingMm() const { return m_geometry.RowSpacingMm(); }
+  double ColSpacingMm() const { return m_geometry.ColSpacingMm(); }
   const std::vector<std::string> &SavedPaths() const { return m_paths; }
 
 private:

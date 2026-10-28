@@ -509,9 +509,9 @@ void MyMainWindow::ReloadScanBinChoice() {
   const wxString unit = (lng && lng->get() == wxT("Russian")) ? wxT("мкм") : wxT("um");
   const int sel = m_scan_bin_choice->GetSelection();
 
-  auto label = [&](const wxString &dpi) {
-    const std::string pitch_x = FormatPitchUm(um_x, 1);
-    const std::string pitch_y = FormatPitchUm(um_y, 1);
+  auto label = [&](int bin, const wxString &dpi) {
+    const std::string pitch_x = FormatPitchUm(um_x, bin);
+    const std::string pitch_y = FormatPitchUm(um_y, bin);
     const wxString x_text = wxString::FromUTF8(pitch_x.c_str());
     const wxString y_text = wxString::FromUTF8(pitch_y.c_str());
     if (pitch_x == pitch_y) {
@@ -521,8 +521,8 @@ void MyMainWindow::ReloadScanBinChoice() {
   };
 
   m_scan_bin_choice->Clear();
-  m_scan_bin_choice->Append(label(wxT("600 dpi")));
-  m_scan_bin_choice->Append(label(wxT("1200 dpi")));
+  m_scan_bin_choice->Append(label(2, wxT("600 dpi")));
+  m_scan_bin_choice->Append(label(1, wxT("1200 dpi")));
   m_scan_bin_choice->SetSelection(sel == 1 ? 1 : 0);
   m_updating_scan_mode = false;
 }
@@ -603,7 +603,7 @@ void MyMainWindow::SetupScanGeometryControls() {
                      0, wxEXPAND, 5);
   scan_sizer->Insert(insert_at + 5,
                      new wxStaticText(scan_box, wxID_ANY,
-                                      labelOf(wxT("Pixel pitch is constant and is not divided by bin."))),
+                                      labelOf(wxT("Written pixel spacing is this pitch times bin."))),
                      0, wxALL, 8);
 
   m_pixel_um_x_text->SetValue(wxString(settings["scan"]["pixel_um_x"]));

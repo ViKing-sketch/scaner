@@ -116,9 +116,9 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
   params.study_instance_uid = m_study_uid;
   params.series_instance_uid = m_series_uid;
   params.instance_number = m_next_instance;
-  params.pixel_spacing_row_mm = m_geometry.RowSpacingMm();
-  params.pixel_spacing_col_mm = m_geometry.ColSpacingMm();
-  params.image_position_row_mm = static_cast<double>(m_y_origin) * m_geometry.RowSpacingMm();
+  params.pixel_spacing_row_mm = RowSpacingMm();
+  params.pixel_spacing_col_mm = ColSpacingMm();
+  params.image_position_row_mm = static_cast<double>(m_y_origin) * RowSpacingMm();
   params.identity = m_identity;
 
   const std::string path = MakeDicomSegmentPath(m_chosen_path, m_next_instance);

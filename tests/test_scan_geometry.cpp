@@ -222,9 +222,9 @@ void TestBinningAndSpacing() {
   coarse.bin = 2;
   CHECK(Near(fine.RowSpacingMm(), 0.021));
   CHECK(Near(fine.ColSpacingMm(), 0.021));
-  CHECK(Near(coarse.RowSpacingMm(), fine.RowSpacingMm()));
-  CHECK(Near(coarse.ColSpacingMm(), fine.ColSpacingMm()));
-  CHECK(Near(coarse.RowSpacingMm(), 0.021));
+  CHECK(Near(coarse.RowSpacingMm(), 2.0 * fine.RowSpacingMm()));
+  CHECK(Near(coarse.ColSpacingMm(), 2.0 * fine.ColSpacingMm()));
+  CHECK(Near(coarse.RowSpacingMm(), 0.042));
   CHECK(FormatPitchUm(21.4, 2) == "42.8");
   CHECK(FormatPitchUm(21.0, 1) == "21");
 
@@ -232,8 +232,8 @@ void TestBinningAndSpacing() {
   measured.bin = 2;
   measured.pixel_um_x = 21.4;
   measured.pixel_um_y = 21.4;
-  CHECK(Near(measured.RowSpacingMm(), 0.0214));
-  CHECK(Near(measured.ColSpacingMm(), 0.0214));
+  CHECK(Near(measured.RowSpacingMm(), 0.0428));
+  CHECK(Near(measured.ColSpacingMm(), 0.0428));
 
   ScanGeometry axes;
   axes.bin = 2;
@@ -251,8 +251,8 @@ void TestBinningAndSpacing() {
   CHECK(saveToDcm(sample, path, params));
   DicomTags tags;
   CHECK(LoadDicom(path, tags));
-  CHECK(Near(tags.spacing_row, 0.025));
-  CHECK(Near(tags.spacing_col, 0.021));
+  CHECK(Near(tags.spacing_row, 0.050));
+  CHECK(Near(tags.spacing_col, 0.042));
   CHECK(tags.position_x == "0");
   CHECK(NearMm(tags.position_row, 0.0));
   CHECK(tags.position_z == "0");
@@ -265,8 +265,35 @@ void TestBinningAndSpacing() {
   CHECK(saveToDcm(sample, measured_path, measured_params));
   DicomTags measured_tags;
   CHECK(LoadDicom(measured_path, measured_tags));
-  CHECK(Near(measured_tags.spacing_row, 0.0214));
-  CHECK(Near(measured_tags.spacing_col, 0.0214));
+  CHECK(Near(measured_tags.spacing_row, 0.0428));
+  CHECK(Near(measured_tags.spacing_col, 0.0428));
+
+  // Номинал 21 мкм: bin 1 пишет 0.021 мм, bin 2 — 0.042 мм, по обеим осям и в каждом сегменте.
+  for (int bin : {1, 2}) {
+    ScanGeometry nominal;
+    nominal.bin = bin;
+    nominal.pixel_um_x = 21.0;
+    nominal.pixel_um_y = 21.0;
+    const double spacing = 0.021 * static_cast<double>(bin);
+    const std::string chosen = (dir / ("nominal_" + std::to_string(bin) + ".dcm")).string();
+    ScanSession nominal_session(chosen, nominal, 4);
+    cv::Mat nominal_head(4, 2, CV_16UC1, cv::Scalar(1));
+    cv::Mat nominal_tail(2, 2, CV_16UC1, cv::Scalar(2));
+    CHECK(nominal_session.PushRegion(nominal_head, 0, 0));
+    CHECK(nominal_session.PushRegion(nominal_tail, 0, 4));
+    CHECK(nominal_session.Finish());
+    CHECK(nominal_session.SavedSegmentCount() == 2);
+    CHECK(Near(nominal_session.RowSpacingMm(), spacing));
+    CHECK(Near(nominal_session.ColSpacingMm(), spacing));
+    for (int instance = 1; instance <= 2; ++instance) {
+      DicomTags nominal_tags;
+      CHECK(LoadDicom(MakeDicomSegmentPath(chosen, instance), nominal_tags));
+      CHECK(Near(nominal_tags.spacing_row, spacing));
+      CHECK(Near(nominal_tags.spacing_col, spacing));
+      CHECK(Near(nominal_tags.spacing_row, nominal_session.RowSpacingMm()));
+      CHECK(Near(nominal_tags.spacing_col, nominal_session.ColSpacingMm()));
+    }
+  }
   std::filesystem::remove_all(dir);
 }
 
@@ -581,8 +608,8 @@ void TestRulerPitch() {
   measured.bin = 2;
   measured.pixel_um_x = optical_x;
   measured.pixel_um_y = kNominalPixelUm;
-  CHECK(Near(measured.ColSpacingMm(), optical_x / 1000.0));
-  CHECK(Near(measured.RowSpacingMm(), kNominalPixelUm / 1000.0));
+  CHECK(Near(measured.ColSpacingMm(), 10.0 / 238.0));
+  CHECK(Near(measured.RowSpacingMm(), 21.0 * 2.0 / 1000.0));
   CHECK(FormatPitchUm(optical_x, 1) == "21.0084");
   CHECK(FormatPitchUm(optical_x, 2) == "42.0168");
 
@@ -590,8 +617,8 @@ void TestRulerPitch() {
   CHECK(OpticalPitchFromSavedGrid(20.0, 400.0, 2, optical_y));
   CHECK(Near(optical_y, 25.0));
   measured.pixel_um_y = optical_y;
-  CHECK(Near(measured.RowSpacingMm(), optical_y / 1000.0));
-  CHECK(Near(measured.ColSpacingMm(), optical_x / 1000.0));
+  CHECK(Near(measured.RowSpacingMm(), 20.0 / 400.0));
+  CHECK(Near(measured.ColSpacingMm(), 10.0 / 238.0));
 
   double px = 0;
   double py = 0;
@@ -729,8 +756,8 @@ void TestIdentityFromSettings() {
   CHECK(geometry.bin == 2);
   CHECK(Near(geometry.pixel_um_x, 21.0));
   CHECK(Near(geometry.pixel_um_y, 25.5));
-  CHECK(Near(geometry.RowSpacingMm(), 0.0255));
-  CHECK(Near(geometry.ColSpacingMm(), 0.021));
+  CHECK(Near(geometry.RowSpacingMm(), 0.051));
+  CHECK(Near(geometry.ColSpacingMm(), 0.042));
   CHECK(identity.serial == "SN-1042");
   CHECK(identity.acceptance_date == "20260315");
   CHECK(identity.accepted_by == "Иванов");
@@ -751,29 +778,40 @@ void TestIdentityFromSettings() {
   CHECK(session.SavedSegmentCount() == 2);
   const std::string path1 = MakeDicomSegmentPath(chosen, 1);
   const std::string path2 = MakeDicomSegmentPath(chosen, 2);
-  CheckIdentity(path1, identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
-  CheckIdentity(path2, identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
+  CHECK(Near(session.RowSpacingMm(), geometry.pixel_um_y * geometry.bin / 1000.0));
+  CHECK(Near(session.ColSpacingMm(), geometry.pixel_um_x * geometry.bin / 1000.0));
+  CheckIdentity(path1, identity, session.RowSpacingMm(), session.ColSpacingMm());
+  CheckIdentity(path2, identity, session.RowSpacingMm(), session.ColSpacingMm());
   DicomTags first;
   DicomTags second;
   CHECK(LoadDicom(path1, first));
   CHECK(LoadDicom(path2, second));
-  CHECK(NearMm(second.position_row, static_cast<double>(first.rows) * geometry.RowSpacingMm()));
+  CHECK(Near(first.spacing_row, 0.051));
+  CHECK(Near(first.spacing_col, 0.042));
+  CHECK(Near(second.spacing_row, first.spacing_row));
+  CHECK(Near(second.spacing_col, first.spacing_col));
+  CHECK(NearMm(second.position_row, static_cast<double>(first.rows) * session.RowSpacingMm()));
 
   ScanGeometry fine = geometry;
   fine.bin = 1;
   const std::string fine_path = (dir / "fine.dcm").string();
   ScanSession fine_session(fine_path, fine, 4, identity);
   CHECK(fine_session.PushRegion(head, 0, 0));
+  CHECK(fine_session.PushRegion(tail, 0, 4));
   CHECK(fine_session.Finish());
-  CHECK(fine_session.SavedSegmentCount() == 1);
-  CheckIdentity(MakeDicomSegmentPath(fine_path, 1), identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
-
-  // Деление сохранённого шага на bin — другое число. В файл пишется шаг из настроек.
-  double recovered = 0;
-  CHECK(OpticalPitchFromSavedGrid(geometry.RowSpacingMm() * 4.0, 4.0, geometry.bin, recovered));
-  CHECK(Near(recovered, geometry.pixel_um_y / static_cast<double>(geometry.bin)));
-  CHECK(!Near(recovered, geometry.pixel_um_y));
-  CHECK(Near(geometry.RowSpacingMm(), geometry.pixel_um_y / 1000.0));
+  CHECK(fine_session.SavedSegmentCount() == 2);
+  CHECK(Near(fine_session.RowSpacingMm(), geometry.pixel_um_y / 1000.0));
+  CHECK(Near(fine_session.ColSpacingMm(), geometry.pixel_um_x / 1000.0));
+  CHECK(Near(fine_session.RowSpacingMm(), session.RowSpacingMm() / 2.0));
+  CHECK(Near(fine_session.ColSpacingMm(), session.ColSpacingMm() / 2.0));
+  const std::string fine1 = MakeDicomSegmentPath(fine_path, 1);
+  const std::string fine2 = MakeDicomSegmentPath(fine_path, 2);
+  CheckIdentity(fine1, identity, fine_session.RowSpacingMm(), fine_session.ColSpacingMm());
+  CheckIdentity(fine2, identity, fine_session.RowSpacingMm(), fine_session.ColSpacingMm());
+  DicomTags fine_tags;
+  CHECK(LoadDicom(fine1, fine_tags));
+  CHECK(Near(fine_tags.spacing_row, 0.0255));
+  CHECK(Near(fine_tags.spacing_col, 0.021));
 
   const std::string bare_path = (dir / "bare.ini").string();
   {
@@ -785,7 +823,7 @@ void TestIdentityFromSettings() {
   CHECK(LoadAppScanSettingsFile(bare_path, bare_geometry, bare_identity));
   CHECK(bare_identity.empty());
   CHECK(bare_geometry.bin == kDefaultBin);
-  CHECK(Near(bare_geometry.RowSpacingMm(), kNominalPixelUm / 1000.0));
+  CHECK(Near(bare_geometry.RowSpacingMm(), kNominalPixelUm * kDefaultBin / 1000.0));
   const std::string bare_dcm = (dir / "bare.dcm").string();
   DicomWriteParams bare_params;
   bare_params.instance_number = 1;
@@ -796,8 +834,8 @@ void TestIdentityFromSettings() {
   CHECK(saveToDcm(sample, bare_dcm, bare_params));
   DicomTags bare_tags;
   CHECK(LoadDicom(bare_dcm, bare_tags));
-  CHECK(Near(bare_tags.spacing_row, 0.021));
-  CHECK(Near(bare_tags.spacing_col, 0.021));
+  CHECK(Near(bare_tags.spacing_row, 0.042));
+  CHECK(Near(bare_tags.spacing_col, 0.042));
   CHECK(TagAbsent(bare_dcm, DCM_DeviceSerialNumber));
   CHECK(TagAbsent(bare_dcm, DCM_DateOfLastCalibration));
   CHECK(TagAbsent(bare_dcm, DCM_ImagerPixelSpacing));
@@ -823,11 +861,13 @@ void TestIdentityFromSettings() {
   CHECK(ReadTag(bad_saved, DCM_DeviceSerialNumber, serial));
   CHECK(serial == "SN-1");
   CHECK(TagAbsent(bad_saved, DCM_DateOfLastCalibration));
-  CHECK(Near(bad_geometry.RowSpacingMm(), 0.021));
+  CHECK(Near(bad_geometry.RowSpacingMm(), 0.042));
+  CHECK(Near(bad_session.RowSpacingMm(), 0.042));
+  CHECK(Near(bad_session.ColSpacingMm(), 0.042));
   DicomTags bad_tags;
   CHECK(LoadDicom(bad_saved, bad_tags));
-  CHECK(Near(bad_tags.spacing_row, 0.021));
-  CHECK(Near(bad_tags.spacing_col, 0.021));
+  CHECK(Near(bad_tags.spacing_row, 0.042));
+  CHECK(Near(bad_tags.spacing_col, 0.042));
 
   CHECK(!LoadAppScanSettingsFile((dir / "missing.ini").string(), geometry, identity));
 
