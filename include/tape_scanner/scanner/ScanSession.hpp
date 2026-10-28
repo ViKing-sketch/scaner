@@ -1,5 +1,6 @@
 #pragma once
 
+#include <tape_scanner/scanner/ExposureSteps.hpp>
 #include <tape_scanner/scanner/Film.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 
@@ -11,6 +12,9 @@
  * Номер экземпляра начинается с 1.
  */
 std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_number);
+
+/// Рядом с выбранным файлом: `film.dcm` -> `film.session-meta.json`.
+std::string MakeSessionMetadataPath(const std::string &chosen_path);
 
 /**
  * Один скан — одна Study UID и одна Series UID.
@@ -43,10 +47,21 @@ public:
   const ScanGeometry &Geometry() const { return m_geometry; }
   const std::vector<std::string> &SavedPaths() const { return m_paths; }
 
+  /**
+   * Запрошенные микросекунды переводятся таблицей шагов в эффективные,
+   * пишутся в журнал и в файл метаданных сессии. Пока таблица — заглушка.
+   * PLACEHOLDER: awaiting Max's measured exposure step table. Not a calibration.
+   */
+  void RecordRequestedExposure(double requested_us);
+  void RecordRequestedExposure(double requested_us, const ExposureStepTable &table);
+  const SessionExposureMetadata &ExposureMetadata() const { return m_exposure; }
+  const std::string &ExposureMetadataPath() const { return m_metadata_path; }
+
 private:
   bool Flush();
   bool CommitSplit();
   bool WriteSegment(const cv::Mat &image);
+  void WriteExposureMetadata();
 
   std::string m_chosen_path;
   ScanGeometry m_geometry;
@@ -61,4 +76,6 @@ private:
   int m_max_rows = kMaxDicomDimension;
   int m_saved = 0;
   std::vector<std::string> m_paths;
+  std::string m_metadata_path;
+  SessionExposureMetadata m_exposure;
 };

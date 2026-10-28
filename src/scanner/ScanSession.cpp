@@ -1,6 +1,7 @@
 #include <tape_scanner/scanner/ScanSession.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 
+#include <tape_scanner/scanner/ExposureSteps.hpp>
 #include <tape_scanner/scanner/ScanLog.hpp>
 
 #include <dcmtk/config/osconfig.h>
@@ -17,23 +18,42 @@ std::string MakeUid(const char *root) {
   return std::string(dcmGenerateUniqueIdentifier(buf, root));
 }
 
-} // namespace
+struct ChosenStem {
+  std::string stem;
+  std::string ext;
+};
 
-std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_number) {
+ChosenStem SplitChosenPath(const std::string &chosen_path) {
   const auto slash = chosen_path.find_last_of("/\\");
   const auto dot = chosen_path.find_last_of('.');
   const bool has_ext = dot != std::string::npos && (slash == std::string::npos || dot > slash);
-  const std::string stem = has_ext ? chosen_path.substr(0, dot) : chosen_path;
-  const std::string ext = has_ext ? chosen_path.substr(dot) : std::string(".dcm");
+  ChosenStem parts;
+  parts.stem = has_ext ? chosen_path.substr(0, dot) : chosen_path;
+  parts.ext = has_ext ? chosen_path.substr(dot) : std::string(".dcm");
+  return parts;
+}
+
+} // namespace
+
+std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_number) {
+  const ChosenStem parts = SplitChosenPath(chosen_path);
   char suffix[16];
   std::snprintf(suffix, sizeof(suffix), "_%03d", instance_number);
-  return stem + suffix + ext;
+  return parts.stem + suffix + parts.ext;
+}
+
+std::string MakeSessionMetadataPath(const std::string &chosen_path) {
+  return SplitChosenPath(chosen_path).stem + ".session-meta.json";
 }
 
 ScanSession::ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows)
     : m_chosen_path(std::move(chosen_path)), m_geometry(ScanGeometry::Normalized(geometry)),
       m_study_uid(MakeUid(SITE_STUDY_UID_ROOT)), m_series_uid(MakeUid(SITE_SERIES_UID_ROOT)),
-      m_max_rows(max_segment_rows > 0 ? max_segment_rows : kMaxDicomDimension) {}
+      m_max_rows(max_segment_rows > 0 ? max_segment_rows : kMaxDicomDimension) {
+  m_metadata_path = MakeSessionMetadataPath(m_chosen_path);
+  m_exposure.table_placeholder = true;
+  m_exposure.table_note = kExposureStepTablePlaceholderNote;
+}
 
 bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
   if (img.empty() || img.type() != CV_16UC1) {
@@ -101,7 +121,31 @@ bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
   return true;
 }
 
-bool ScanSession::Finish() { return Flush(); }
+void ScanSession::RecordRequestedExposure(double requested_us) {
+  RecordRequestedExposure(requested_us, ActiveExposureStepTable());
+}
+
+void ScanSession::RecordRequestedExposure(double requested_us, const ExposureStepTable &table) {
+  const ExposureMatch match = table.Match(requested_us, true);
+  m_exposure.exposures.push_back(ExposureObservation{match.requested_us, match.effective_us, match.step_index});
+  m_exposure.table_note = table.Note().empty() ? std::string(kExposureStepTablePlaceholderNote) : table.Note();
+  if (!table.IsPlaceholder()) {
+    m_exposure.table_placeholder = false;
+  }
+  WriteExposureMetadata();
+}
+
+void ScanSession::WriteExposureMetadata() {
+  if (m_exposure.exposures.empty()) {
+    return;
+  }
+  WriteExposureMetadataFile(m_metadata_path, m_exposure);
+}
+
+bool ScanSession::Finish() {
+  WriteExposureMetadata();
+  return Flush();
+}
 
 bool ScanSession::WriteSegment(const cv::Mat &image) {
   if (image.empty() || image.rows > m_max_rows || image.cols > kMaxDicomDimension ||
@@ -117,6 +161,9 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
   params.pixel_spacing_row_mm = m_geometry.RowSpacingMm();
   params.pixel_spacing_col_mm = m_geometry.ColSpacingMm();
   params.image_position_row_mm = static_cast<double>(m_y_origin) * m_geometry.RowSpacingMm();
+  if (!m_exposure.exposures.empty()) {
+    params.image_comments = FormatExposureSessionComment(m_exposure);
+  }
 
   const std::string path = MakeDicomSegmentPath(m_chosen_path, m_next_instance);
   if (!saveToDcm(image, path, params)) {

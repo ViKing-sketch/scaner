@@ -1,5 +1,6 @@
 #include "tape_scanner/scanner/Utils.hpp"
 #include <tape_scanner/scanner/Camera.hpp>
+#include <tape_scanner/scanner/ExposureSteps.hpp>
 #include <opencv2/photo.hpp>
 
 namespace {
@@ -54,6 +55,10 @@ void Camera::EnableAutoExpose(bool enable) {
 }
 
 void Camera::SetExpose(int microseconds) {
+    // Команда камере — запрошенное время. Эффективный шаг (пока PLACEHOLDER,
+    // awaiting Max's measured exposure step table) идёт в журнал, метаданные
+    // сессии и веса HDR. Подменять уставку вычисленным шагом нельзя:
+    // это ещё не замер Макса.
     TryOrLogicError(CameraSetExposureTime(m_h_camera, microseconds),
                     "SetExpose error!");
 }
@@ -136,11 +141,16 @@ wxBitmap Camera::Snapshot(double expose) {
     return wxBitmap(img);
 }
 
-cv::Mat Camera::GetMat(double expose) {
+cv::Mat Camera::GetMat(double expose, bool log_exposure) {
   std::lock_guard lock(m_mutex);
 
     if (m_h_camera < 0) {
         throw std::logic_error("Camera not connected!");
+    }
+
+    double effective = expose;
+    if (expose != 0.0) {
+      effective = ActiveExposureStepTable().Match(expose, log_exposure).effective_us;
     }
 
     tSdkFrameHead frame_info;
@@ -152,18 +162,29 @@ cv::Mat Camera::GetMat(double expose) {
     double min_val, max_val;
     cv::minMaxLoc(res, &min_val, &max_val);
     double mean_val = cv::mean(res).val[0];
-    wxLogMessage("Camera: GetMat(expose = %g). min = %g, mean = %g, max = %g", expose, min_val, mean_val, max_val);
+    if (expose != 0.0) {
+      wxLogMessage("Camera: GetMat(requested = %g us, effective = %g us). min = %g, mean = %g, max = %g", expose,
+                   effective, min_val, mean_val, max_val);
+    } else {
+      wxLogMessage("Camera: GetMat(expose = %g). min = %g, mean = %g, max = %g", expose, min_val, mean_val, max_val);
+    }
     return res;
 }
 
 cv::Mat Camera::GetCadrWithExposes(std::vector<float> exposes){
   std::vector<cv::Mat> imgs_16;
+  std::vector<float> effective;
+  imgs_16.reserve(exposes.size());
+  effective.reserve(exposes.size());
 
   for(auto expose : exposes) {
-    imgs_16.push_back(GetMat(expose));
+    // Взвешивание HDR — по эффективному шагу. Камере уходит запрошенное время.
+    const double eff = ActiveExposureStepTable().Match(expose, true).effective_us;
+    effective.push_back(static_cast<float>(eff));
+    imgs_16.push_back(GetMat(expose, false));
   }
 
-  return ToRadiance(imgs_16, exposes);
+  return ToRadiance(imgs_16, effective);
 }
 
 int Camera::GetFirstCamera() {
@@ -230,7 +251,10 @@ void Camera::CalibrateResponses()
 
   for (int i = 1; i < 1875; i++) {
     double expose = i * 16;
-    cv::Mat img16 = GetMat(expose)(roi);
+    // Кривая отклика строится по эффективному шагу, не по запросу.
+    // Пока таблица — PLACEHOLDER, этот прогон не калибровка.
+    const double effective = ActiveExposureStepTable().Match(expose, true).effective_us;
+    cv::Mat img16 = GetMat(expose, false)(roi);
 
     double min_val, max_val;
     {
@@ -251,7 +275,7 @@ void Camera::CalibrateResponses()
     }
 
     images.push_back(img_16_to_8(img16));
-    exposes.push_back(expose);
+    exposes.push_back(static_cast<float>(effective));
   }
 
   wxLogMessage("Captured %zu cadres", images.size());
@@ -298,6 +322,7 @@ void Camera::InitResponses()
 }
 
 cv::Mat Camera::ToRadiance(std::vector<cv::Mat> imgs_16, std::vector<float> exposes) {
+  // exposes — эффективные микросекунды после таблицы шагов. Debevec взвешивает по ним.
   cv::Mat img_32f;
   auto merger = cv::createMergeDebevec();
   if (!m_responses.empty()) {

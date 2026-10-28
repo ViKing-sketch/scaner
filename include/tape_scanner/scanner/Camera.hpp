@@ -29,7 +29,9 @@ public:
     uint8_t* GetCadr(tSdkFrameHead& frame_info, double expose = 0.0);
     void SaveCadrTo(const std::string& dest_path);
     wxBitmap Snapshot(double expose = 0.0);
-    cv::Mat GetMat(double expose = 0.0);
+    /// expose — запрошенные микросекунды. 0 оставляет текущую команду камеры.
+    /// log_exposure пишет строку таблицы шагов. Эффективное время в статистике кадра есть всегда, когда expose != 0.
+    cv::Mat GetMat(double expose = 0.0, bool log_exposure = true);
     cv::Mat GetCadrWithExposes(std::vector<float> exposes);
     void CalibrateResponses();
 

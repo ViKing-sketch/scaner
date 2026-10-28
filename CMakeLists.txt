@@ -4,8 +4,8 @@ project(tape_scanner)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Геометрия скана и DICOM-сегменты собираются отдельно от окна, OpenGL и SDK камеры.
-# Юнит-тест test_scan_geometry камеру и включённый сканер не использует.
+# Геометрия скана, шаги экспозиции и DICOM-сегменты собираются отдельно от окна, OpenGL и SDK камеры.
+# Юнит-тесты test_scan_geometry и test_exposure_steps камеру и включённый сканер не используют.
 find_package(OpenCV REQUIRED)
 find_package(DCMTK CONFIG QUIET)
 if(NOT DCMTK_FOUND)
@@ -19,6 +19,7 @@ add_library(tape_scanner_scan STATIC
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
     src/scanner/WindowLevel.cpp
+    src/scanner/ExposureSteps.cpp
 )
 target_include_directories(tape_scanner_scan PUBLIC "include/")
 target_link_libraries(tape_scanner_scan PUBLIC ${OpenCV_LIBS})
@@ -43,6 +44,13 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+add_executable(test_exposure_steps tests/test_exposure_steps.cpp)
+target_link_libraries(test_exposure_steps PRIVATE tape_scanner_scan)
+if(MSVC)
+    target_compile_options(test_exposure_steps PRIVATE /utf-8)
+endif()
+add_test(NAME test_exposure_steps COMMAND test_exposure_steps)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
@@ -159,5 +167,5 @@ if(wxWidgets_FOUND AND OpenGL_FOUND AND glm_FOUND AND EXISTS "${CAMERA_SDK_LIB}"
 else()
     message(STATUS
         "UI scanner target is skipped: wxWidgets, OpenGL, glm or the camera SDK is missing. "
-        "test_scan_geometry still builds and does not need the scanner to be connected.")
+        "test_scan_geometry and test_exposure_steps still build and do not need the scanner to be connected.")
 endif()
