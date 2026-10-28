@@ -44,6 +44,22 @@ if(MSVC)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
 
+# Опрос связи контроллера не открывает сокет и не требует SDK камеры.
+add_library(tape_scanner_controller_link STATIC
+    src/scanner/ControllerLink.cpp
+)
+target_include_directories(tape_scanner_controller_link PUBLIC "include/")
+if(MSVC)
+    target_compile_options(tape_scanner_controller_link PRIVATE /utf-8)
+endif()
+
+add_executable(test_controller_link tests/test_controller_link.cpp)
+target_link_libraries(test_controller_link PRIVATE tape_scanner_controller_link)
+if(MSVC)
+    target_compile_options(test_controller_link PRIVATE /utf-8)
+endif()
+add_test(NAME test_controller_link COMMAND test_controller_link)
+
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)
 find_package(glm CONFIG QUIET)

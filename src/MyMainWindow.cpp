@@ -214,6 +214,9 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   SetupScanGeometryControls();
   if (create) _settings_file_create(true);
   if (update) _settings_file_update(true);
+  // До первого тика таймера скан выключен: связи ещё нет.
+  m_controller_link = std::make_unique<ControllerLinkPoll>([this] { return ProbeControllerLink(); });
+  ApplyControllerLink(m_controller_link->Current());
   // start timers
   m_service_timer.Start( 1000 );
   m_controller_timer.Start( 2000 );
@@ -618,6 +621,10 @@ void MyMainWindow::SetupScanGeometryControls() {
 }
 
 void MyMainWindow::OnScanStart(wxCommandEvent &event) {
+  if (!InitController()) {
+    return;
+  }
+
   if(!InitScanner()) {
     return;
   }
@@ -1425,11 +1432,9 @@ void MyMainWindow::SetupDcmGenerator(){
   }
 }
 
-bool MyMainWindow::InitController()
+bool MyMainWindow::ProbeControllerLink()
 {
-  SetStatusText(_("Connecting controller..."), 0);
-
-  if(!m_controller){
+  if (!m_controller) {
     m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
                                                 safeStrToInt(m_controller_udp_port_text->GetValue()));
   }
@@ -1438,12 +1443,26 @@ bool MyMainWindow::InitController()
     m_controller->TryConnect();
   }
 
-  if (m_controller->IsConnected()) {
-    SetStatusText(_("Controller connected"), 0);
-    return true;
+  return m_controller->IsConnected();
+}
+
+void MyMainWindow::ApplyControllerLink(const ControllerLinkSnapshot &snap)
+{
+  SetStatusText(_(snap.status_text), 0);
+  if (m_start_scan_btn) {
+    m_start_scan_btn->Enable(snap.scan_enabled);
+  }
+}
+
+bool MyMainWindow::InitController()
+{
+  if (!m_controller_link) {
+    m_controller_link = std::make_unique<ControllerLinkPoll>([this] { return ProbeControllerLink(); });
   }
 
-  return false;
+  const ControllerLinkSnapshot snap = m_controller_link->Poll();
+  ApplyControllerLink(snap);
+  return snap.scan_enabled;
 }
 
 bool MyMainWindow::InitCamera()
