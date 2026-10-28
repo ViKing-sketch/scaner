@@ -166,6 +166,31 @@ std::string FormatDicomDecimal(double value) {
   return text;
 }
 
+void PutText(DcmDataset *dataset, const DcmTagKey &tag, const std::string &value) {
+  if (!value.empty()) {
+    dataset->putAndInsertString(tag, value.c_str());
+  }
+}
+
+void WriteScannerIdentity(DcmDataset *dataset, const ScannerIdentity &identity) {
+  if (identity.empty()) {
+    return;
+  }
+  dataset->putAndInsertString(DCM_SpecificCharacterSet, "ISO_IR 192");
+  PutText(dataset, DCM_DeviceSerialNumber, identity.serial);
+  PutText(dataset, DCM_DateOfLastCalibration, identity.acceptance_date);
+  PutText(dataset, DCM_OperatorsName, identity.accepted_by);
+  PutText(dataset, DCM_Manufacturer, identity.manufacturer);
+  PutText(dataset, DCM_SecondaryCaptureDeviceManufacturer, identity.manufacturer);
+  PutText(dataset, DCM_ManufacturerModelName, identity.model);
+  PutText(dataset, DCM_SecondaryCaptureDeviceManufacturerModelName, identity.model);
+  PutText(dataset, DCM_StationName, identity.station_name);
+  PutText(dataset, DCM_InstitutionName, identity.institution);
+  PutText(dataset, DCM_SoftwareVersions, identity.software_version);
+  PutText(dataset, DCM_SecondaryCaptureDeviceSoftwareVersions, identity.software_version);
+  PutText(dataset, DCM_SecondaryCaptureDeviceID, identity.device_id);
+}
+
 /**
  * Среднее 2×2.
  * sum считается в uint32_t: 4 * 65535 = 262140, это не влезает в uint16
@@ -278,6 +303,10 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertUint16(DCM_HighBit, 15);
   dataset->putAndInsertUint16(DCM_PixelRepresentation, 0);
   dataset->putAndInsertString(DCM_PixelSpacing, spacing.c_str());
+  // Шаг — постоянная из настроек. Imager Pixel Spacing (0018,1164) этот писатель
+  // раньше не заполнял, поэтому тег не добавляется. Точный тег шага считается
+  // Pixel Spacing (0028,0030), пока Макс не подтвердит иное.
+  WriteScannerIdentity(dataset, params.identity);
   dataset->putAndInsertString(DCM_ImagePositionPatient, image_position.c_str());
   dataset->putAndInsertUint16(DCM_Rows, static_cast<Uint16>(rows));
   dataset->putAndInsertUint16(DCM_Columns, static_cast<Uint16>(cols));

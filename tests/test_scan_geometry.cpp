@@ -1,6 +1,7 @@
 #include <tape_scanner/scanner/DicomSeries.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
+#include <tape_scanner/scanner/ScannerIdentity.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 #include <tape_scanner/scanner/WindowLevel.hpp>
 
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -220,9 +222,9 @@ void TestBinningAndSpacing() {
   coarse.bin = 2;
   CHECK(Near(fine.RowSpacingMm(), 0.021));
   CHECK(Near(fine.ColSpacingMm(), 0.021));
-  CHECK(Near(coarse.RowSpacingMm(), 2.0 * fine.RowSpacingMm()));
-  CHECK(Near(coarse.ColSpacingMm(), 2.0 * fine.ColSpacingMm()));
-  CHECK(Near(coarse.RowSpacingMm(), 0.042));
+  CHECK(Near(coarse.RowSpacingMm(), fine.RowSpacingMm()));
+  CHECK(Near(coarse.ColSpacingMm(), fine.ColSpacingMm()));
+  CHECK(Near(coarse.RowSpacingMm(), 0.021));
   CHECK(FormatPitchUm(21.4, 2) == "42.8");
   CHECK(FormatPitchUm(21.0, 1) == "21");
 
@@ -230,8 +232,8 @@ void TestBinningAndSpacing() {
   measured.bin = 2;
   measured.pixel_um_x = 21.4;
   measured.pixel_um_y = 21.4;
-  CHECK(Near(measured.RowSpacingMm(), 0.0428));
-  CHECK(Near(measured.ColSpacingMm(), 0.0428));
+  CHECK(Near(measured.RowSpacingMm(), 0.0214));
+  CHECK(Near(measured.ColSpacingMm(), 0.0214));
 
   ScanGeometry axes;
   axes.bin = 2;
@@ -249,8 +251,8 @@ void TestBinningAndSpacing() {
   CHECK(saveToDcm(sample, path, params));
   DicomTags tags;
   CHECK(LoadDicom(path, tags));
-  CHECK(Near(tags.spacing_row, 0.050));
-  CHECK(Near(tags.spacing_col, 0.042));
+  CHECK(Near(tags.spacing_row, 0.025));
+  CHECK(Near(tags.spacing_col, 0.021));
   CHECK(tags.position_x == "0");
   CHECK(NearMm(tags.position_row, 0.0));
   CHECK(tags.position_z == "0");
@@ -263,8 +265,8 @@ void TestBinningAndSpacing() {
   CHECK(saveToDcm(sample, measured_path, measured_params));
   DicomTags measured_tags;
   CHECK(LoadDicom(measured_path, measured_tags));
-  CHECK(Near(measured_tags.spacing_row, 0.0428));
-  CHECK(Near(measured_tags.spacing_col, 0.0428));
+  CHECK(Near(measured_tags.spacing_row, 0.0214));
+  CHECK(Near(measured_tags.spacing_col, 0.0214));
   std::filesystem::remove_all(dir);
 }
 
@@ -579,8 +581,8 @@ void TestRulerPitch() {
   measured.bin = 2;
   measured.pixel_um_x = optical_x;
   measured.pixel_um_y = kNominalPixelUm;
-  CHECK(Near(measured.ColSpacingMm(), 10.0 / 238.0));
-  CHECK(Near(measured.RowSpacingMm(), 21.0 * 2.0 / 1000.0));
+  CHECK(Near(measured.ColSpacingMm(), optical_x / 1000.0));
+  CHECK(Near(measured.RowSpacingMm(), kNominalPixelUm / 1000.0));
   CHECK(FormatPitchUm(optical_x, 1) == "21.0084");
   CHECK(FormatPitchUm(optical_x, 2) == "42.0168");
 
@@ -588,8 +590,8 @@ void TestRulerPitch() {
   CHECK(OpticalPitchFromSavedGrid(20.0, 400.0, 2, optical_y));
   CHECK(Near(optical_y, 25.0));
   measured.pixel_um_y = optical_y;
-  CHECK(Near(measured.RowSpacingMm(), 20.0 / 400.0));
-  CHECK(Near(measured.ColSpacingMm(), 10.0 / 238.0));
+  CHECK(Near(measured.RowSpacingMm(), optical_y / 1000.0));
+  CHECK(Near(measured.ColSpacingMm(), optical_x / 1000.0));
 
   double px = 0;
   double py = 0;
@@ -623,6 +625,215 @@ void TestRulerPitch() {
   CHECK(Near(sy, 1.0));
 }
 
+bool ReadTag(const std::string &path, const DcmTagKey &tag, std::string &out) {
+  DcmFileFormat file;
+  if (file.loadFile(path.c_str()).bad()) {
+    return false;
+  }
+  OFString value;
+  if (file.getDataset()->findAndGetOFString(tag, value).bad()) {
+    return false;
+  }
+  out = value.c_str();
+  return true;
+}
+
+bool TagAbsent(const std::string &path, const DcmTagKey &tag) {
+  DcmFileFormat file;
+  if (file.loadFile(path.c_str()).bad()) {
+    return false;
+  }
+  DcmElement *element = nullptr;
+  return file.getDataset()->findAndGetElement(tag, element).bad();
+}
+
+void CheckIdentity(const std::string &path, const ScannerIdentity &identity, double row_mm, double col_mm) {
+  DicomTags tags;
+  CHECK(LoadDicom(path, tags));
+  CHECK(Near(tags.spacing_row, row_mm));
+  CHECK(Near(tags.spacing_col, col_mm));
+  std::string value;
+  CHECK(ReadTag(path, DCM_SpecificCharacterSet, value));
+  CHECK(value == "ISO_IR 192");
+  CHECK(ReadTag(path, DCM_DeviceSerialNumber, value));
+  CHECK(value == identity.serial);
+  CHECK(ReadTag(path, DCM_DateOfLastCalibration, value));
+  CHECK(value == identity.acceptance_date);
+  CHECK(ReadTag(path, DCM_OperatorsName, value));
+  CHECK(value == identity.accepted_by);
+  CHECK(ReadTag(path, DCM_Manufacturer, value));
+  CHECK(value == identity.manufacturer);
+  CHECK(ReadTag(path, DCM_SecondaryCaptureDeviceManufacturer, value));
+  CHECK(value == identity.manufacturer);
+  CHECK(ReadTag(path, DCM_ManufacturerModelName, value));
+  CHECK(value == identity.model);
+  CHECK(ReadTag(path, DCM_SecondaryCaptureDeviceManufacturerModelName, value));
+  CHECK(value == identity.model);
+  CHECK(ReadTag(path, DCM_StationName, value));
+  CHECK(value == identity.station_name);
+  CHECK(ReadTag(path, DCM_InstitutionName, value));
+  CHECK(value == identity.institution);
+  CHECK(ReadTag(path, DCM_SoftwareVersions, value));
+  CHECK(value == identity.software_version);
+  CHECK(ReadTag(path, DCM_SecondaryCaptureDeviceSoftwareVersions, value));
+  CHECK(value == identity.software_version);
+  CHECK(ReadTag(path, DCM_SecondaryCaptureDeviceID, value));
+  CHECK(value == identity.device_id);
+  CHECK(TagAbsent(path, DCM_ImagerPixelSpacing));
+}
+
+void TestIdentityFromSettings() {
+  CHECK(DicomAcceptanceDate("2026-03-15") == "20260315");
+  CHECK(DicomAcceptanceDate("2026.03.15") == "20260315");
+  CHECK(DicomAcceptanceDate("15.03.2026") == "20260315");
+  CHECK(DicomAcceptanceDate("15-03-2026") == "20260315");
+  CHECK(DicomAcceptanceDate("20260315") == "20260315");
+  CHECK(DicomAcceptanceDate("2024-02-29") == "20240229");
+  CHECK(DicomAcceptanceDate("2023-02-29").empty());
+  CHECK(DicomAcceptanceDate("yesterday").empty());
+  CHECK(DicomAcceptanceDate("").empty());
+
+  const SettingsLookup slash = [](const std::string &section, const std::string &key) {
+    if (section == "scanner" && key == "serial") {
+      return std::string("A\\B");
+    }
+    return std::string();
+  };
+  CHECK(IdentityFromSettings(slash).serial == "A/B");
+
+  const auto dir = std::filesystem::temp_directory_path() / "tape_scanner_identity";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::string ini_path = (dir / "settings.ini").string();
+  {
+    std::ofstream out(ini_path);
+    out << "[scan]\n";
+    out << "bin=2\n";
+    out << "pixel_um_x=21.0\n";
+    out << "pixel_um_y=25.5\n";
+    out << "[scanner]\n";
+    out << "serial=SN-1042\n";
+    out << "acceptance_date=2026-03-15\n";
+    out << "accepted_by=Иванов\n";
+    out << "manufacturer=FilmLab\n";
+    out << "model=Tape-100\n";
+    out << "station_name=LAB-1\n";
+    out << "institution=NDT Lab\n";
+    out << "software_version=1.4.2\n";
+    out << "device_id=SCN-7\n";
+  }
+
+  ScanGeometry geometry;
+  ScannerIdentity identity;
+  CHECK(LoadAppScanSettingsFile(ini_path, geometry, identity));
+  CHECK(geometry.bin == 2);
+  CHECK(Near(geometry.pixel_um_x, 21.0));
+  CHECK(Near(geometry.pixel_um_y, 25.5));
+  CHECK(Near(geometry.RowSpacingMm(), 0.0255));
+  CHECK(Near(geometry.ColSpacingMm(), 0.021));
+  CHECK(identity.serial == "SN-1042");
+  CHECK(identity.acceptance_date == "20260315");
+  CHECK(identity.accepted_by == "Иванов");
+  CHECK(identity.manufacturer == "FilmLab");
+  CHECK(identity.model == "Tape-100");
+  CHECK(identity.station_name == "LAB-1");
+  CHECK(identity.institution == "NDT Lab");
+  CHECK(identity.software_version == "1.4.2");
+  CHECK(identity.device_id == "SCN-7");
+
+  const std::string chosen = (dir / "roll.dcm").string();
+  ScanSession session(chosen, geometry, 4, identity);
+  cv::Mat head(4, 2, CV_16UC1, cv::Scalar(11));
+  cv::Mat tail(2, 2, CV_16UC1, cv::Scalar(22));
+  CHECK(session.PushRegion(head, 0, 0));
+  CHECK(session.PushRegion(tail, 0, 4));
+  CHECK(session.Finish());
+  CHECK(session.SavedSegmentCount() == 2);
+  const std::string path1 = MakeDicomSegmentPath(chosen, 1);
+  const std::string path2 = MakeDicomSegmentPath(chosen, 2);
+  CheckIdentity(path1, identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
+  CheckIdentity(path2, identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
+  DicomTags first;
+  DicomTags second;
+  CHECK(LoadDicom(path1, first));
+  CHECK(LoadDicom(path2, second));
+  CHECK(NearMm(second.position_row, static_cast<double>(first.rows) * geometry.RowSpacingMm()));
+
+  ScanGeometry fine = geometry;
+  fine.bin = 1;
+  const std::string fine_path = (dir / "fine.dcm").string();
+  ScanSession fine_session(fine_path, fine, 4, identity);
+  CHECK(fine_session.PushRegion(head, 0, 0));
+  CHECK(fine_session.Finish());
+  CHECK(fine_session.SavedSegmentCount() == 1);
+  CheckIdentity(MakeDicomSegmentPath(fine_path, 1), identity, geometry.RowSpacingMm(), geometry.ColSpacingMm());
+
+  // Деление сохранённого шага на bin — другое число. В файл пишется шаг из настроек.
+  double recovered = 0;
+  CHECK(OpticalPitchFromSavedGrid(geometry.RowSpacingMm() * 4.0, 4.0, geometry.bin, recovered));
+  CHECK(Near(recovered, geometry.pixel_um_y / static_cast<double>(geometry.bin)));
+  CHECK(!Near(recovered, geometry.pixel_um_y));
+  CHECK(Near(geometry.RowSpacingMm(), geometry.pixel_um_y / 1000.0));
+
+  const std::string bare_path = (dir / "bare.ini").string();
+  {
+    std::ofstream out(bare_path);
+    out << "[settings]\nlanguage=English\n";
+  }
+  ScanGeometry bare_geometry;
+  ScannerIdentity bare_identity;
+  CHECK(LoadAppScanSettingsFile(bare_path, bare_geometry, bare_identity));
+  CHECK(bare_identity.empty());
+  CHECK(bare_geometry.bin == kDefaultBin);
+  CHECK(Near(bare_geometry.RowSpacingMm(), kNominalPixelUm / 1000.0));
+  const std::string bare_dcm = (dir / "bare.dcm").string();
+  DicomWriteParams bare_params;
+  bare_params.instance_number = 1;
+  bare_params.pixel_spacing_row_mm = bare_geometry.RowSpacingMm();
+  bare_params.pixel_spacing_col_mm = bare_geometry.ColSpacingMm();
+  bare_params.identity = bare_identity;
+  cv::Mat sample(2, 2, CV_16UC1, cv::Scalar(3));
+  CHECK(saveToDcm(sample, bare_dcm, bare_params));
+  DicomTags bare_tags;
+  CHECK(LoadDicom(bare_dcm, bare_tags));
+  CHECK(Near(bare_tags.spacing_row, 0.021));
+  CHECK(Near(bare_tags.spacing_col, 0.021));
+  CHECK(TagAbsent(bare_dcm, DCM_DeviceSerialNumber));
+  CHECK(TagAbsent(bare_dcm, DCM_DateOfLastCalibration));
+  CHECK(TagAbsent(bare_dcm, DCM_ImagerPixelSpacing));
+  CHECK(TagAbsent(bare_dcm, DCM_SpecificCharacterSet));
+
+  const std::string bad_date = (dir / "bad-date.ini").string();
+  {
+    std::ofstream out(bad_date);
+    out << "[scan]\npixel_um_x=21\npixel_um_y=21\nbin=2\n";
+    out << "[scanner]\nserial=SN-1\nacceptance_date=yesterday\n";
+  }
+  ScanGeometry bad_geometry;
+  ScannerIdentity bad_identity;
+  CHECK(LoadAppScanSettingsFile(bad_date, bad_geometry, bad_identity));
+  CHECK(bad_identity.serial == "SN-1");
+  CHECK(bad_identity.acceptance_date.empty());
+  const std::string bad_dcm = (dir / "bad-date.dcm").string();
+  ScanSession bad_session(bad_dcm, bad_geometry, 4, bad_identity);
+  CHECK(bad_session.PushRegion(sample, 0, 0));
+  CHECK(bad_session.Finish());
+  const std::string bad_saved = MakeDicomSegmentPath(bad_dcm, 1);
+  std::string serial;
+  CHECK(ReadTag(bad_saved, DCM_DeviceSerialNumber, serial));
+  CHECK(serial == "SN-1");
+  CHECK(TagAbsent(bad_saved, DCM_DateOfLastCalibration));
+  CHECK(Near(bad_geometry.RowSpacingMm(), 0.021));
+  DicomTags bad_tags;
+  CHECK(LoadDicom(bad_saved, bad_tags));
+  CHECK(Near(bad_tags.spacing_row, 0.021));
+  CHECK(Near(bad_tags.spacing_col, 0.021));
+
+  CHECK(!LoadAppScanSettingsFile((dir / "missing.ini").string(), geometry, identity));
+
+  std::filesystem::remove_all(dir);
+}
+
 } // namespace
 
 int main() {
@@ -633,6 +844,7 @@ int main() {
   TestSeriesListSkipsPixelData();
   TestWindowLevel();
   TestRulerPitch();
+  TestIdentityFromSettings();
 
   if (g_failures != 0) {
     std::cerr << g_failures << " check(s) failed\n";

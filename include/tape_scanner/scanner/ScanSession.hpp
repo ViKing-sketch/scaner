@@ -2,6 +2,7 @@
 
 #include <tape_scanner/scanner/Film.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
+#include <tape_scanner/scanner/ScannerIdentity.hpp>
 
 #include <string>
 #include <vector>
@@ -25,7 +26,9 @@ std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_nu
 class ScanSession {
 public:
   /// max_segment_rows оставлен параметром, чтобы тест стыка не строил холст в 60000 строк.
-  ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows = kMaxDicomDimension);
+  /// identity копируется в каждый файл серии. Пустые поля паспорта не пишутся.
+  ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows = kMaxDicomDimension,
+              ScannerIdentity identity = {});
 
   /**
    * x, y — координаты тайла в сетке выбранного bin, от начала рулона.
@@ -50,6 +53,7 @@ private:
 
   std::string m_chosen_path;
   ScanGeometry m_geometry;
+  ScannerIdentity m_identity;
   Film m_film;
   std::string m_study_uid;
   std::string m_series_uid;

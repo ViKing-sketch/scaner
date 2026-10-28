@@ -1,5 +1,7 @@
 #pragma once
 
+#include <tape_scanner/scanner/ScannerIdentity.hpp>
+
 #include <opencv2/core/types.hpp>
 #include <string>
 
@@ -29,17 +31,19 @@ cv::Mat ApplyScanBinning(const cv::Mat &src, int bin);
  * Пустые UID генерируются при записи. Study/Series одной серии скана
  * нужно передавать одинаковыми, SOP — своим на каждый файл (или пустым).
  *
- * pixel_spacing_* — миллиметры. По умолчанию 0.042 мм: номинал 21 мкм и bin = 2.
+ * pixel_spacing_* — миллиметры. По умолчанию 0.021 мм: постоянный номинал 21 мкм.
+ * bin шаг не меняет. identity — паспорт сканера из настроек; пустые поля не пишутся.
  */
 struct DicomWriteParams {
   std::string study_instance_uid;
   std::string series_instance_uid;
   std::string sop_instance_uid;
   int instance_number = 1;
-  double pixel_spacing_row_mm = 0.042;
-  double pixel_spacing_col_mm = 0.042;
+  double pixel_spacing_row_mm = kNominalPixelUm / 1000.0;
+  double pixel_spacing_col_mm = kNominalPixelUm / 1000.0;
   /// Image Position Patient (0020,0032), средняя координата: индекс первой строки сегмента × шаг строки, мм.
   double image_position_row_mm = 0;
+  ScannerIdentity identity;
 };
 
 /**

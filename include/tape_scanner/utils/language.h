@@ -407,7 +407,7 @@ private:
             wxT("Apply Y"),
             wxT("Pick X"),
             wxT("Pick Y"),
-            wxT("Pixels are counted on the saved grid; optical pitch divides by bin."),
+            wxT("Pixel pitch is constant and is not divided by bin."),
         },
         {
             //
@@ -623,7 +623,7 @@ private:
             wxT("Записать Y"),
             wxT("Указать X"),
             wxT("Указать Y"),
-            wxT("Пиксели считаются по сохранённой сетке; оптический шаг делится на bin."),
+            wxT("Шаг пикселя постоянный и на bin не делится."),
     },
     };
 };
