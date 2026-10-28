@@ -52,3 +52,10 @@ struct DicomWriteParams {
  */
 bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWriteParams &params = {});
 
+/**
+ * Файл уже содержит этот кадр и переданные метаданные.
+ * Пустой UID в params не сравнивается. Повторная фиксация узнаёт свой файл
+ * и не подменяет его другим кадром.
+ */
+bool DicomFileMatches(const std::string &filename, const cv::Mat &image, const DicomWriteParams &params);
+

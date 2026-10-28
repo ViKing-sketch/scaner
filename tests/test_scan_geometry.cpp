@@ -282,6 +282,8 @@ void TestSegmentSplit() {
   ScanSession empty_session(chosen, geometry);
   CHECK(empty_session.Finish());
   CHECK(empty_session.SavedSegmentCount() == 0);
+  CHECK(empty_session.CommitStatus() == SessionCommitStatus::Empty);
+  CHECK(!std::filesystem::exists(empty_session.Directory()));
   CHECK(!std::filesystem::exists(MakeDicomSegmentPath(chosen, 1)));
 
   ScanSession session(chosen, geometry);
@@ -294,11 +296,15 @@ void TestSegmentSplit() {
   CHECK(session.Finish());
   CHECK(session.SavedSegmentCount() == 2);
 
-  const std::string path1 = MakeDicomSegmentPath(chosen, 1);
-  const std::string path2 = MakeDicomSegmentPath(chosen, 2);
   CHECK(session.SavedPaths().size() == 2);
-  CHECK(session.SavedPaths()[0] == path1);
-  CHECK(session.SavedPaths()[1] == path2);
+  const std::string path1 = session.SavedPaths()[0];
+  const std::string path2 = session.SavedPaths()[1];
+  CHECK(std::filesystem::path(path1).filename() == "roll_001.dcm");
+  CHECK(std::filesystem::path(path2).filename() == "roll_002.dcm");
+  CHECK(path1.find(".session-") != std::string::npos);
+  CHECK(session.CommitStatus() == SessionCommitStatus::Complete);
+  CHECK(std::filesystem::exists(session.Directory() / "manifest.json"));
+  CHECK(!std::filesystem::exists(MakeDicomSegmentPath(chosen, 1)));
 
   const auto size_before = std::filesystem::file_size(path1);
   CHECK(session.Finish());
@@ -355,8 +361,11 @@ void TestOverlapCutAndShortStripe() {
   CHECK(session.Finish());
   CHECK(session.SavedSegmentCount() == 2);
 
-  const std::string path1 = MakeDicomSegmentPath(chosen, 1);
-  const std::string path2 = MakeDicomSegmentPath(chosen, 2);
+  CHECK(session.SavedPaths().size() == 2);
+  const std::string path1 = session.SavedPaths()[0];
+  const std::string path2 = session.SavedPaths()[1];
+  CHECK(session.CommitStatus() == SessionCommitStatus::Complete);
+  CHECK(!std::filesystem::exists(MakeDicomSegmentPath(chosen, 1)));
   cv::Mat pixels1;
   cv::Mat pixels2;
   DicomTags tags1;
@@ -393,8 +402,9 @@ void TestOverlapCutAndShortStripe() {
   CHECK(short_session.PushRegion(narrow, 0, 25));
   CHECK(short_session.Finish());
   CHECK(short_session.SavedSegmentCount() == 1);
+  CHECK(short_session.CommitStatus() == SessionCommitStatus::Complete);
   cv::Mat short_pixels;
-  CHECK(LoadPixels(MakeDicomSegmentPath(short_path, 1), short_pixels));
+  CHECK(LoadPixels(short_session.SavedPaths().at(0), short_pixels));
   CHECK(short_pixels.rows == 55);
   CHECK(short_pixels.cols == 20);
   CHECK(short_pixels.at<uint16_t>(39, 0) == 1000);
@@ -409,22 +419,26 @@ void TestOverlapCutAndShortStripe() {
   CHECK(retry.PushRegion(partial, 0, 20));
   CHECK(!retry.Finish());
   CHECK(retry.SavedSegmentCount() == 0);
+  CHECK(retry.CommitStatus() == SessionCommitStatus::Empty);
+  CHECK(!std::filesystem::exists(retry.Directory()));
   CHECK(!std::filesystem::exists(MakeDicomSegmentPath(missing.string(), 1)));
   std::filesystem::create_directories(missing.parent_path());
   CHECK(retry.Finish());
   CHECK(retry.SavedSegmentCount() == 1);
+  CHECK(retry.CommitStatus() == SessionCommitStatus::Complete);
   cv::Mat retried;
-  CHECK(LoadPixels(MakeDicomSegmentPath(missing.string(), 1), retried));
+  CHECK(LoadPixels(retry.SavedPaths().at(0), retried));
   CHECK(retried.rows == 30);
   CHECK(retried.cols == 16);
   CHECK(retried.at<uint16_t>(0, 0) == 1000);
   CHECK(retried.at<uint16_t>(20, 0) == 2000);
   CHECK(retried.at<uint16_t>(20, 6) == 0);
-  const auto saved_size = std::filesystem::file_size(MakeDicomSegmentPath(missing.string(), 1));
+  const auto saved_size = std::filesystem::file_size(retry.SavedPaths().at(0));
   CHECK(retry.Finish());
   CHECK(retry.SavedSegmentCount() == 1);
-  CHECK(std::filesystem::file_size(MakeDicomSegmentPath(missing.string(), 1)) == saved_size);
-  CHECK(!std::filesystem::exists(MakeDicomSegmentPath(missing.string(), 2)));
+  CHECK(std::filesystem::file_size(retry.SavedPaths().at(0)) == saved_size);
+  CHECK(retry.SavedPaths().size() == 1);
+  CHECK(!std::filesystem::exists(MakeDicomSegmentPath(missing.string(), 1)));
 
   const std::vector<DicomSeriesPart> series = ListDicomSeries(path1);
   CHECK(series.size() == 2);

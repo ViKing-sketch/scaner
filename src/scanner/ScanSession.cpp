@@ -33,7 +33,15 @@ std::string MakeDicomSegmentPath(const std::string &chosen_path, int instance_nu
 ScanSession::ScanSession(std::string chosen_path, ScanGeometry geometry, int max_segment_rows)
     : m_chosen_path(std::move(chosen_path)), m_geometry(ScanGeometry::Normalized(geometry)),
       m_study_uid(MakeUid(SITE_STUDY_UID_ROOT)), m_series_uid(MakeUid(SITE_SERIES_UID_ROOT)),
+      m_store(m_chosen_path, MakeSessionId(), m_geometry, m_study_uid, m_series_uid),
       m_max_rows(max_segment_rows > 0 ? max_segment_rows : kMaxDicomDimension) {}
+
+SessionCommitStatus ScanSession::CommitStatus() const {
+  if (!m_store.IsOpen()) {
+    return m_saved == 0 ? SessionCommitStatus::Empty : SessionCommitStatus::Fault;
+  }
+  return m_store.Manifest().status;
+}
 
 bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
   if (img.empty() || img.type() != CV_16UC1) {
@@ -91,23 +99,54 @@ bool ScanSession::PushRegion(cv::Mat img, int x, int y) {
     return false;
   }
 
+  const int abs_y = local_y + m_y_origin;
+  cv::Mat stored = img.clone();
   try {
     m_film.PushRegion(std::move(img), x, local_y);
   } catch (const std::exception &e) {
     ScanLogError(std::string("ScanSession: ") + e.what());
     return false;
   }
+  m_pending.push_back(PendingTile{std::move(stored), x, abs_y});
   m_open_abs_y = y;
   return true;
 }
 
-bool ScanSession::Finish() { return Flush(); }
+bool ScanSession::Finish() {
+  if (!Flush()) {
+    return false;
+  }
+  if (m_saved == 0) {
+    return true;
+  }
+  if (m_store.Manifest().status == SessionCommitStatus::Complete && m_store.HashesMatch()) {
+    return true;
+  }
+  if (!m_store.HashesMatch()) {
+    m_store.TrySetStatus(SessionCommitStatus::Fault);
+    return false;
+  }
+  return m_store.SetStatus(SessionCommitStatus::Complete);
+}
 
 bool ScanSession::WriteSegment(const cv::Mat &image) {
   if (image.empty() || image.rows > m_max_rows || image.cols > kMaxDicomDimension ||
       image.rows > kMaxDicomDimension) {
     ScanLogError("ScanSession: segment is empty or larger than one DICOM frame");
     return false;
+  }
+
+  while (!m_pending.empty()) {
+    std::string tile_id;
+    const PendingTile &tile = m_pending.front();
+    if (!m_store.CommitTile(tile.image, tile.x, tile.y, tile_id)) {
+      if (m_store.IsOpen()) {
+        m_store.TrySetStatus(SessionCommitStatus::Partial);
+      }
+      return false;
+    }
+    m_segment_tile_ids.push_back(tile_id);
+    m_pending.erase(m_pending.begin());
   }
 
   DicomWriteParams params;
@@ -118,14 +157,21 @@ bool ScanSession::WriteSegment(const cv::Mat &image) {
   params.pixel_spacing_col_mm = m_geometry.ColSpacingMm();
   params.image_position_row_mm = static_cast<double>(m_y_origin) * m_geometry.RowSpacingMm();
 
-  const std::string path = MakeDicomSegmentPath(m_chosen_path, m_next_instance);
-  if (!saveToDcm(image, path, params)) {
-    ScanLogError("ScanSession: failed to save " + path);
+  std::vector<std::string> source_ids = m_carried_tile_ids;
+  source_ids.insert(source_ids.end(), m_segment_tile_ids.begin(), m_segment_tile_ids.end());
+  std::string path;
+  if (!m_store.CommitSegment(image, params, m_y_origin, source_ids, path)) {
+    if (m_store.IsOpen()) {
+      m_store.TrySetStatus(SessionCommitStatus::Partial);
+    }
     return false;
   }
 
   ScanLogMessageF("ScanSession: saved %s (%ix%i), instance %i", path.c_str(), image.cols, image.rows,
                   m_next_instance);
+  m_last_segment_tile_ids = source_ids;
+  m_segment_tile_ids.clear();
+  m_carried_tile_ids.clear();
   m_paths.push_back(path);
   ++m_next_instance;
   ++m_saved;
@@ -152,11 +198,13 @@ bool ScanSession::CommitSplit() {
   if (!WriteSegment(head)) {
     return false;
   }
+  const std::vector<std::string> attached = m_last_segment_tile_ids;
 
   m_split_at = -1;
   m_film.Reset();
   m_open_abs_y = -1;
   if (!tail.empty()) {
+    m_carried_tile_ids = attached;
     try {
       m_film.PushRegion(std::move(tail), 0, 0);
     } catch (const std::exception &e) {

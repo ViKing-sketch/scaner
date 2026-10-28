@@ -1,11 +1,17 @@
 #include <tape_scanner/scanner/Utils.hpp>
+#include <tape_scanner/scanner/FileCommit.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <tape_scanner/scanner/ScanLog.hpp>
 
 #include <dcmtk/config/osconfig.h>
@@ -207,6 +213,69 @@ cv::Mat ApplyScanBinning(const cv::Mat &src, int bin) {
   return BinAverage2x2(src);
 }
 
+bool DicomFileMatches(const std::string &filename, const cv::Mat &image, const DicomWriteParams &params) {
+  if (image.empty() || image.type() != CV_16UC1 || filename.empty()) {
+    return false;
+  }
+  DcmFileFormat file;
+  if (file.loadFile(filename.c_str()).bad()) {
+    return false;
+  }
+  DcmDataset *dataset = file.getDataset();
+  Uint16 rows = 0;
+  Uint16 cols = 0;
+  if (dataset->findAndGetUint16(DCM_Rows, rows).bad() || dataset->findAndGetUint16(DCM_Columns, cols).bad()) {
+    return false;
+  }
+  if (rows != image.rows || cols != image.cols) {
+    return false;
+  }
+  const Uint16 *data = nullptr;
+  unsigned long count = 0;
+  if (dataset->findAndGetUint16Array(DCM_PixelData, data, &count).bad() || data == nullptr) {
+    return false;
+  }
+  if (count != static_cast<unsigned long>(image.rows) * static_cast<unsigned long>(image.cols)) {
+    return false;
+  }
+  const cv::Mat continuous = image.isContinuous() ? image : image.clone();
+  if (std::memcmp(data, continuous.data, count * sizeof(Uint16)) != 0) {
+    return false;
+  }
+
+  auto same_string = [&](const DcmTagKey &tag, const std::string &expected) {
+    if (expected.empty()) {
+      return true;
+    }
+    OFString value;
+    return dataset->findAndGetOFString(tag, value).good() && value == expected.c_str();
+  };
+  if (!same_string(DCM_StudyInstanceUID, params.study_instance_uid) ||
+      !same_string(DCM_SeriesInstanceUID, params.series_instance_uid) ||
+      !same_string(DCM_SOPInstanceUID, params.sop_instance_uid)) {
+    return false;
+  }
+  OFString instance;
+  if (dataset->findAndGetOFString(DCM_InstanceNumber, instance).bad() ||
+      std::atoi(instance.c_str()) != params.instance_number) {
+    return false;
+  }
+  OFString row_spacing;
+  OFString col_spacing;
+  OFString position_y;
+  if (dataset->findAndGetOFString(DCM_PixelSpacing, row_spacing, 0).bad() ||
+      dataset->findAndGetOFString(DCM_PixelSpacing, col_spacing, 1).bad() ||
+      dataset->findAndGetOFString(DCM_ImagePositionPatient, position_y, 1).bad()) {
+    return false;
+  }
+  const double row_mm = std::strtod(row_spacing.c_str(), nullptr);
+  const double col_mm = std::strtod(col_spacing.c_str(), nullptr);
+  const double position = std::strtod(position_y.c_str(), nullptr);
+  return std::abs(row_mm - params.pixel_spacing_row_mm) < 1e-6 &&
+         std::abs(col_mm - params.pixel_spacing_col_mm) < 1e-6 &&
+         std::abs(position - params.image_position_row_mm) < 1e-4;
+}
+
 bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWriteParams &params) {
   if (image.empty()) {
     std::cerr << "Ошибка: пустое изображение" << std::endl;
@@ -290,11 +359,49 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
     return false;
   }
 
-  status = fileFormat.saveFile(filename.c_str(), EXS_LittleEndianExplicit);
-  if (status.bad()) {
-    std::cerr << "Ошибка сохранения DICOM-файла: " << status.text() << std::endl;
+  // Сначала временный файл в том же каталоге. Итоговое имя не заменяется.
+  // fsync файла и каталога — барьер; одного rename недостаточно.
+  const std::filesystem::path final_path(filename);
+  std::error_code exists_error;
+  if (std::filesystem::exists(final_path, exists_error) || exists_error) {
+    std::cerr << "Ошибка: файл уже существует, перезапись запрещена: " << filename << std::endl;
+    return false;
+  }
+  const std::filesystem::path parent =
+      final_path.parent_path().empty() ? std::filesystem::path(".") : final_path.parent_path();
+  std::error_code parent_error;
+  if (!std::filesystem::is_directory(parent, parent_error) || parent_error) {
+    std::cerr << "Ошибка сохранения DICOM-файла: нет каталога для " << filename << std::endl;
     return false;
   }
 
+  DicomWriteParams written = params;
+  written.study_instance_uid = study_uid;
+  written.series_instance_uid = series_uid;
+  written.sop_instance_uid = sop_uid;
+
+  const std::filesystem::path temp_path = parent / (final_path.filename().string() + ".partial");
+  std::error_code remove_error;
+  std::filesystem::remove(temp_path, remove_error);
+  status = fileFormat.saveFile(temp_path.string().c_str(), EXS_LittleEndianExplicit);
+  if (status.bad()) {
+    std::filesystem::remove(temp_path, remove_error);
+    std::cerr << "Ошибка сохранения DICOM-файла: " << status.text() << std::endl;
+    return false;
+  }
+  if (!FsyncFile(temp_path) || !DicomFileMatches(temp_path.string(), *pixels, written)) {
+    std::filesystem::remove(temp_path, remove_error);
+    std::cerr << "Ошибка: записанный DICOM не совпал с кадром" << std::endl;
+    return false;
+  }
+  if (!PublishNewFile(temp_path, final_path)) {
+    const bool same = std::filesystem::exists(final_path, exists_error) && !exists_error &&
+                      DicomFileMatches(final_path.string(), *pixels, written);
+    std::filesystem::remove(temp_path, remove_error);
+    if (!same) {
+      std::cerr << "Ошибка: не удалось зафиксировать DICOM-файл " << filename << std::endl;
+      return false;
+    }
+  }
   return true;
 }
