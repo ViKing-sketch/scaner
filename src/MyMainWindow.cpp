@@ -31,6 +31,10 @@
 #include <tape_scanner/dicom_generator/BinToDcmConverter.hpp>
 #include <tape_scanner/dicom_generator/JpegToDcmConverter.hpp>
 
+#include <tape_scanner/scanner/DicomFileMeta.hpp>
+#include <tape_scanner/scanner/DicomNumbers.hpp>
+#include <tape_scanner/scanner/DicomScan.hpp>
+#include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/Utils.hpp>
 
 #include <Windows.h>
@@ -76,6 +80,8 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   crc32_init();
   // language converter setup
   lng = new Language();
+  wxMenuItem *open_scan = m_menu1->Insert(1, wxID_ANY, _("Open scan..."));
+  m_menu1->Bind(wxEVT_COMMAND_MENU_SELECTED, wxCommandEventHandler(MyMainWindow::OnOpenScan), this, open_scan->GetId());
   // setup status
   SetStatusText(_("Welcome"), 2);
   // settings get/set/create
@@ -1146,90 +1152,82 @@ void MyMainWindow::OnCalculateOffset(wxCommandEvent &event)
   m_scanner->AutoCalibrateCamera();
 }
 
+void MyMainWindow::OpenLoadedDicom(const wxString &path, const wxString &name)
+{
+  _log(wxString::Format(_("File name: %s\n"), name));
+  _log(wxString::Format(_("File path: %s\n"), path));
+  try {
+    m_dcm_processor.Open(path);
+  } catch (const std::exception &ex) {
+    _log(wxString::Format(_("%s\n"), ex.what()));
+    return;
+  }
+
+  open_file_name = name;
+  open_file_path = path;
+  open_file_frames_cnt = static_cast<int>(m_dcm_processor.GetFramesCount());
+  open_file_frame_width = static_cast<int>(m_dcm_processor.GetFrameWidth());
+  open_file_frame_height = static_cast<int>(m_dcm_processor.GetFrameHeight());
+  open_file_tmp_path = open_file_path + ".bmp";
+  open_file_frame = 1;
+  const WindowLevel fitted = m_dcm_processor.CurrentWindow();
+  ShowWindow(static_cast<int>(std::lround(fitted.center)), static_cast<int>(std::lround(fitted.width)));
+  open_file_rotation = 0;
+  open_file_flip = 0;
+  m_current_frame->SetValue(wxString::Format("%i", m_dcm_processor.GetCurFrameNum() + 1));
+  m_rotation0_btn->SetValue(true);
+  m_rotation90Left_btn->SetValue(false);
+  m_rotation90Right_btn->SetValue(false);
+  m_rotation180_btn->SetValue(false);
+  m_flipH_btn->SetValue(false);
+  m_flipV_btn->SetValue(false);
+  if (m_invert_btn) {
+    m_invert_btn->SetValue(m_dcm_processor.Inverted());
+  }
+
+  m_tags_view->DeleteAllItems();
+  const DicomScan &scan = m_dcm_processor.Current();
+  for (const DicomTagText &tag : scan.tags) {
+    wxVector<wxVariant> row;
+    row.push_back(wxVariant(wxString::FromUTF8(tag.key.c_str())));
+    row.push_back(wxVariant(wxString::FromUTF8(tag.name.c_str())));
+    row.push_back(wxVariant(wxString::FromUTF8(tag.value.c_str())));
+    m_tags_view->AppendItem(row);
+  }
+  if (!scan.patient_name.empty()) {
+    _log(wxString::Format(_("Patient name is: %s\n"), wxString::FromUTF8(scan.patient_name.c_str())));
+  }
+  if (scan.spacing_row_mm > 0.0 && scan.spacing_col_mm > 0.0) {
+    const wxString row_mm = wxString::FromUTF8(FormatDicomDecimal(scan.spacing_row_mm).c_str());
+    const wxString col_mm = wxString::FromUTF8(FormatDicomDecimal(scan.spacing_col_mm).c_str());
+    _log(wxString::Format(_("Pixel spacing: %s x %s mm\n"), row_mm, col_mm));
+  }
+  _log(_("Successfuly opened. See Data tab.\n"));
+  SetTitle(wxString::Format(_("%s (frames: %i, size: %ix%i)"),
+                            open_file_name, open_file_frames_cnt,
+                            open_file_frame_width, open_file_frame_height));
+}
+
 void MyMainWindow::OnDCMFileOpen(wxCommandEvent& event)
 {
-  // Creates an "open file" dialog
-  wxFileDialog* OpenDialog = new wxFileDialog(
-      this, _("Open DCM file.."), wxEmptyString, wxEmptyString,
-      _("DICOM files (*.dcm)|*.dcm"), wxFD_OPEN, wxDefaultPosition
-      );
-  do {
-    // Shows an "open file" dialog
-    if (OpenDialog->ShowModal() != wxID_OK) break;
-    _log(wxT("\n") + _("--- DICOM FILE OPEN ---") + wxT("\n") + get_time_str());
-    open_file_name = OpenDialog->GetFilename();
-    open_file_path = OpenDialog->GetPath();
-    OpenDialog->Destroy();
-    // show file path
-    _log(wxString::Format(_("File name: %s\n"), open_file_name));
-    _log(wxString::Format(_("File path: %s\n"), open_file_path));
-    // load file
-    // m_gl_image_canvas->SetImage(open_file_path);
-    try
-    {
-      m_dcm_processor.Open(open_file_path);
-      open_file_frames_cnt = m_dcm_processor.GetFramesCount();
-      open_file_frame_width = m_dcm_processor.GetFrameWidth();
-      open_file_frame_height = m_dcm_processor.GetFrameHeight();
-    }
-    catch(std::exception& ex)
-    {
-      _log(wxString::Format(_("%s\n"), ex.what()));
-      break;
-    }
+  wxFileDialog dialog(this, _("Open DCM file.."), wxEmptyString, wxEmptyString,
+                      _("DICOM files (*.dcm)|*.dcm"), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+  if (dialog.ShowModal() != wxID_OK) {
+    return;
+  }
+  _log(wxT("\n") + _("--- DICOM FILE OPEN ---") + wxT("\n") + get_time_str());
+  OpenLoadedDicom(dialog.GetPath(), dialog.GetFilename());
+}
 
-
-    DcmFileFormat file;
-    OFCondition status = file.loadFile((const OFFilename)open_file_path.mb_str());
-    if (status.bad()) {
-      _log(_("ERROR: Can't open file for reading.\n"));
-      break;
-    }
-    // setup opened file info/data/controls
-    open_file_tmp_path = open_file_path + ".bmp";
-    open_file_frame = 1;
-    const WindowLevel fitted = m_dcm_processor.CurrentWindow();
-    ShowWindow(static_cast<int>(std::lround(fitted.center)), static_cast<int>(std::lround(fitted.width)));
-    open_file_rotation = 0;
-    open_file_flip = 0;
-    m_current_frame->SetValue(wxString::Format("%i", m_dcm_processor.GetCurFrameNum() + 1));
-    m_rotation0_btn->SetValue(true);
-    m_rotation90Left_btn->SetValue(false);
-    m_rotation90Right_btn->SetValue(false);
-    m_rotation180_btn->SetValue(false);
-    m_flipH_btn->SetValue(false);
-    m_flipV_btn->SetValue(false);
-    if (m_invert_btn) {
-      m_invert_btn->SetValue(false);
-    }
-    // display file tags data
-    DcmDataset* dataset = file.getDataset();
-    OFString str;
-    wxVector<wxVariant> row;
-    DcmDataDictionary* dcm_dict = new DcmDataDictionary(OFTrue, OFFalse);
-    DcmTagKey* tag;
-    m_tags_view->DeleteAllItems();
-    for (auto it = dcm_dict->normalBegin(); it != dcm_dict->normalEnd(); it++) {
-      tag = (DcmTagKey*)(*it);
-      // ignore pixel data tag
-      if (tag->getGroup() == 0x7FE0 && tag->getElement() == 0x0010) continue;
-      if (dataset->findAndGetOFStringArray((*tag), str).good()) {
-        row.clear();
-        row.push_back(wxVariant(tag->toString().c_str()));
-        row.push_back(wxVariant(dcm_dict->findEntry((*tag), nullptr)->getTagName()));
-        row.push_back(wxVariant(str.c_str()));
-        //m_tags_view->AppendItem(row);
-        m_tags_view->InsertItem(0, row);
-      }
-    }
-    delete dcm_dict;
-    _log(_("Successfuly opened. See Data tab.\n"));
-    // title setup
-    SetTitle(wxString::Format(_("%s (frames: %i, size: %ix%i)"),
-                              open_file_name, open_file_frames_cnt,
-                              open_file_frame_width, open_file_frame_height));
-
-  } while (0);
+void MyMainWindow::OnOpenScan(wxCommandEvent& event)
+{
+  wxFileDialog dialog(this, _("Open scan..."), wxEmptyString, wxEmptyString,
+                      _("All files|*|DICOM (*.dcm)|*.dcm;*.DCM"), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+  if (dialog.ShowModal() != wxID_OK) {
+    return;
+  }
+  _log(wxT("\n") + _("--- OPEN SCAN ---") + wxT("\n") + get_time_str());
+  OpenLoadedDicom(dialog.GetPath(), dialog.GetFilename());
 }
 
 void MyMainWindow::OnCurrentFrameChange( wxCommandEvent& event ) {
@@ -1612,9 +1610,12 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
     dataset->putAndInsertOFStringArray(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_INSTANCE_UID_ROOT));
     dataset->putAndInsertOFStringArray(DCM_StudyID, dcmGenerateUniqueIdentifier(cstr, SITE_STUDY_UID_ROOT));
     dataset->putAndInsertOFStringArray(DCM_BurnedInAnnotation, "NO");
-    dataset->putAndInsertOFStringArray(DCM_NominalScannedPixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelSpacing, "1.0\\1.0"); // mm, row\column
-    dataset->putAndInsertOFStringArray(DCM_PixelAspectRatio, "[1, 1]"); // [row, column]
+    const ScanGeometry nominal_geometry;
+    const std::string nominal_spacing = FormatDicomDecimal(nominal_geometry.RowSpacingMm()) + "\\" +
+                                        FormatDicomDecimal(nominal_geometry.ColSpacingMm());
+    dataset->putAndInsertString(DCM_NominalScannedPixelSpacing, nominal_spacing.c_str());
+    dataset->putAndInsertString(DCM_PixelSpacing, nominal_spacing.c_str());
+    dataset->putAndInsertString(DCM_PixelAspectRatio, kDicomPixelAspectRatio);
     dataset->putAndInsertOFStringArray(DCM_PhotometricInterpretation, "MONOCHROME2");
     dataset->putAndInsertOFStringArray(DCM_RescaleIntercept, "0");
     dataset->putAndInsertOFStringArray(DCM_RescaleSlope, "1");
@@ -1670,10 +1671,10 @@ void MyMainWindow::OnBINToDCMConvert( wxCommandEvent& event ) {
     }
     // insert frames binary data
     dataset->putAndInsertUint8Array(DCM_PixelData, buf, src_file_size_min);
-    // save destination file
+    MatchDicomMediaStorage(metainfo, dataset);
     condition = dcm_file.saveFile((const OFFilename)dest_file_path.mb_str(),
                                   writeXfer, EET_ExplicitLength, EGL_recalcGL, EPD_noChange,
-                                  OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
+                                  OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_updateMeta);
     if (condition.bad()) {
       _log(_("ERROR: Failed to save resulting DICOM file.\n"));
       break;

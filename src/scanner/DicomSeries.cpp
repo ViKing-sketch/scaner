@@ -1,16 +1,22 @@
 #include <tape_scanner/scanner/DicomSeries.hpp>
+#include <tape_scanner/scanner/DicomNumbers.hpp>
+#include <tape_scanner/scanner/DicomScan.hpp>
 
 #include <dcmtk/config/osconfig.h>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
+#include <dcmtk/dcmdata/dcobject.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 
 namespace {
 
 bool ReadPart(const std::filesystem::path &path, DicomSeriesPart &part, std::string &series_uid) {
+  dcmIgnoreParsingErrors.set(OFTrue);
+  dcmIgnoreFileMetaInformationGroupLength.set(OFTrue);
   DcmFileFormat file;
   // Элемент длиннее предела остаётся выгруженным. Пиксели (7FE0,0010) сегмента
   // больше этого порога, теги серии — нет.
@@ -43,11 +49,24 @@ bool ReadPart(const std::filesystem::path &path, DicomSeriesPart &part, std::str
   series_uid = series.c_str();
   part.path = path.string();
   part.instance = std::atoi(instance.c_str());
-  part.position_row_mm = std::strtod(position_y.c_str(), nullptr);
+  const auto position = ParseDicomDecimal(position_y.c_str());
+  const auto spacing = ParseDicomDecimal(spacing_row.c_str());
+  part.position_row_mm = position ? *position : 0;
   part.rows = rows;
   part.cols = cols;
-  part.spacing_row_mm = std::strtod(spacing_row.c_str(), nullptr);
+  part.spacing_row_mm = spacing ? PixelSpacingToMm(*spacing) : 0;
   return true;
+}
+
+bool ConsiderDicomFile(const std::filesystem::path &path) {
+  std::string extension = path.extension().string();
+  for (char &ch : extension) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  if (extension == ".dcm" || extension == ".dicom") {
+    return true;
+  }
+  return FileHasDicomMarker(path.string());
 }
 
 } // namespace
@@ -68,7 +87,7 @@ std::vector<DicomSeriesPart> ListDicomSeries(const std::string &any_segment_path
     if (error || !entry.is_regular_file()) {
       continue;
     }
-    if (entry.path().extension() != ".dcm" && entry.path().extension() != ".DCM") {
+    if (!ConsiderDicomFile(entry.path())) {
       continue;
     }
     std::error_code same_error;

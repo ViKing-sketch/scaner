@@ -1,7 +1,8 @@
 #pragma once
 
+#include <tape_scanner/scanner/DicomNumbers.hpp>
+
 #include <cmath>
-#include <cstdio>
 #include <string>
 
 /**
@@ -55,20 +56,7 @@ struct ScanGeometry {
 
 /// Подпись режима: оптический шаг, умноженный на bin. 21,4 мкм и bin = 2 → "42.8".
 inline std::string FormatPitchUm(double pixel_um, int bin) {
-  const double um = pixel_um * static_cast<double>(bin);
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%.4f", um);
-  std::string text(buf);
-  const auto dot = text.find('.');
-  if (dot != std::string::npos) {
-    while (!text.empty() && text.back() == '0') {
-      text.pop_back();
-    }
-    if (!text.empty() && text.back() == '.') {
-      text.pop_back();
-    }
-  }
-  return text.empty() ? std::string("0") : text;
+  return FormatFixedDecimal(pixel_um * static_cast<double>(bin), 4);
 }
 
 /// Оптический шаг, мкм. Формула: расстояние_мм / число_пикселей * 1000.

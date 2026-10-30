@@ -77,6 +77,8 @@ protected:
   void OnCalculateOffset( wxCommandEvent& event )  override;
 
   void OnDCMFileOpen(wxCommandEvent& event) override;
+  void OnOpenScan(wxCommandEvent& event);
+  void OpenLoadedDicom(const wxString &path, const wxString &name);
   void OnCurrentFrameChange( wxCommandEvent& event ) override;
   void OnCurrentFramePrev( wxCommandEvent& event ) override;
   void OnCurrentFrameNext( wxCommandEvent& event ) override;

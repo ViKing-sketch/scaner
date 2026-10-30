@@ -11,6 +11,7 @@
 #include <dcmtk/dcmdata/libi2d/i2d.h>
 #include <dcmtk/dcmdata/libi2d/i2djpgs.h>
 #include <dcmtk/dcmdata/libi2d/i2dplsc.h>
+#include <tape_scanner/scanner/DicomFileMeta.hpp>
 
 namespace tape_scanner::dicom_generator {
 
@@ -51,8 +52,9 @@ string ConvertJpegToDcm(string in_jpeg_file_path, string_opt out_dcm_file_path =
   dataset->putAndInsertString(DCM_SOPClassUID, UID_SecondaryCaptureImageStorage);
   dataset->putAndInsertString(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(uid, SITE_INSTANCE_UID_ROOT));
   DcmFileFormat dcmff(dataset);
+  MatchDicomMediaStorage(dcmff.getMetaInfo(), dataset);
   condition = dcmff.saveFile(out_dcm_file_path->c_str(), writeXfer, EET_ExplicitLength, EGL_recalcGL, EPD_noChange,
-                             OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
+                             OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_updateMeta);
   if (condition.bad()) {
     throw runtime_error("ERROR: Failed to save resulting DICOM file.");
   }

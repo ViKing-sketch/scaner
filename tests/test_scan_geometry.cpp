@@ -1,3 +1,4 @@
+#include <tape_scanner/scanner/DicomNumbers.hpp>
 #include <tape_scanner/scanner/DicomSeries.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <tape_scanner/scanner/ScanSession.hpp>
@@ -96,9 +97,9 @@ bool LoadDicom(const std::string &path, DicomTags &tags) {
   if (!ok) {
     return false;
   }
-  tags.spacing_row = std::strtod(row.c_str(), nullptr);
-  tags.spacing_col = std::strtod(col.c_str(), nullptr);
-  tags.position_row = std::strtod(position_y.c_str(), nullptr);
+  tags.spacing_row = ParseDicomDecimal(row).value_or(0);
+  tags.spacing_col = ParseDicomDecimal(col).value_or(0);
+  tags.position_row = ParseDicomDecimal(position_y).value_or(0);
   return true;
 }
 

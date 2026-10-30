@@ -1,5 +1,6 @@
 #include <iostream>
 #include "tape_scanner/dicom_viewer/GLImgViewer.h"
+#include <tape_scanner/scanner/DicomNumbers.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
 namespace
@@ -111,10 +112,19 @@ void GLImgViewer::Tile::SetNearest(bool nearest)
 // ImageTiler implementation
 GLImgViewer::ImageTiler::ImageTiler(const cv::Mat& image)
 {
-    GLint maxTexSize;
+    GLint maxTexSize = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTexSize);
-    tileSize = std::min(maxTexSize, 4096);
-    CreateTiles(image);
+    cv::Mat upload = image;
+    const DisplayTilePlan plan = PlanDisplayTiles(image.cols, image.rows, static_cast<int>(maxTexSize));
+    if (plan.upload_cols > 0 && plan.upload_rows > 0 &&
+        (plan.upload_cols != image.cols || plan.upload_rows != image.rows)) {
+        cv::resize(image, upload, cv::Size(plan.upload_cols, plan.upload_rows), 0, 0, cv::INTER_AREA);
+    }
+    tileSize = std::max(plan.tile, 1);
+    if (maxTexSize > 0) {
+        tileSize = std::min(tileSize, static_cast<int>(maxTexSize));
+    }
+    CreateTiles(upload);
 }
 
 void GLImgViewer::ImageTiler::Render(float scale, const wxPoint& offset, const wxSize& viewport) {
