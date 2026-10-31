@@ -39,9 +39,13 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
-#include <string>
+#include <cstdio>
 #include <cstring>
+#include <string>
+#include <thread>
 
 double safeStrToDouble(const wxString &value) {
   return safeStrToDouble(value.ToStdString());
@@ -58,6 +62,68 @@ int safeStrToInt(const wxString &value) {
 #include <exception>
 
 using namespace std;
+
+struct MyMainWindow::HardwareProbeState {
+  std::atomic<bool> stop{false};
+  /// 0 — нет попытки, 1 — идёт, 2 — порт открыт, 3 — не найден.
+  std::atomic<int> controller{0};
+  std::atomic<int> camera{0};
+};
+
+namespace {
+
+/// TCP-проба без DNS и без ожидания системного таймаута connect().
+bool TcpPortOpen(const std::string &ip, int port, int timeout_ms) {
+  if (port <= 0 || port > 65535 || ip.empty()) {
+    return false;
+  }
+  unsigned ip0 = 0;
+  unsigned ip1 = 0;
+  unsigned ip2 = 0;
+  unsigned ip3 = 0;
+  if (std::sscanf(ip.c_str(), "%u.%u.%u.%u", &ip0, &ip1, &ip2, &ip3) != 4 || ip0 > 255 || ip1 > 255 || ip2 > 255 ||
+      ip3 > 255) {
+    return false;
+  }
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(static_cast<u_short>(port));
+  address.sin_addr.s_addr = htonl((ip0 << 24) | (ip1 << 16) | (ip2 << 8) | ip3);
+  const SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (sock == INVALID_SOCKET) {
+    return false;
+  }
+  u_long nonblock = 1;
+  ioctlsocket(sock, FIONBIO, &nonblock);
+  const int started = connect(sock, reinterpret_cast<sockaddr *>(&address), sizeof(address));
+  if (started == SOCKET_ERROR) {
+    const int err = WSAGetLastError();
+    if (err != WSAEWOULDBLOCK && err != WSAEINPROGRESS && err != WSAEALREADY) {
+      closesocket(sock);
+      return false;
+    }
+    fd_set write_set;
+    FD_ZERO(&write_set);
+    FD_SET(sock, &write_set);
+    timeval wait{};
+    wait.tv_sec = timeout_ms / 1000;
+    wait.tv_usec = (timeout_ms % 1000) * 1000;
+    const int selected = select(0, nullptr, &write_set, nullptr, &wait);
+    if (selected <= 0 || !FD_ISSET(sock, &write_set)) {
+      closesocket(sock);
+      return false;
+    }
+    int so_error = 0;
+    int so_len = sizeof(so_error);
+    getsockopt(sock, SOL_SOCKET, SO_ERROR, reinterpret_cast<char *>(&so_error), &so_len);
+    closesocket(sock);
+    return so_error == 0;
+  }
+  closesocket(sock);
+  return true;
+}
+
+} // namespace
 
 // translation related defines
 #ifdef _
@@ -108,6 +174,7 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["bin"] = scan_bin_default.c_str().AsChar();
     settings["scan"]["pixel_um_x"] = scan_pixel_um_x_default.c_str().AsChar();
     settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
+    settings["hardware"]["connect_on_startup"] = "1";
     create = true;
   }
   if (!settings.has("settings") || !settings["settings"].has("language")) {
@@ -191,6 +258,11 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
     settings["scan"]["pixel_um_y"] = scan_pixel_um_y_default.c_str().AsChar();
     update = true;
   }
+  if (!settings.has("hardware") || !settings["hardware"].has("connect_on_startup")) {
+    settings["hardware"]["connect_on_startup"] = "1";
+    update = true;
+  }
+  m_connect_hardware = settings["hardware"]["connect_on_startup"] != "0";
   m_controller_ip_address_text->SetValue(wxString(settings["controller"]["ip_address"]));
   m_controller_net_mask_text->SetValue(wxString(settings["controller"]["net_mask"]));
   m_controller_gateway_text->SetValue(wxString(settings["controller"]["gateway"]));
@@ -218,12 +290,19 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
   autosave_scan_width = m_scan_width_text->GetValue();
   autosave_scan_height = m_scan_length_text->GetValue();
   SetupScanGeometryControls();
+  SetupHardwareConnectControls();
   if (create) _settings_file_create(true);
   if (update) _settings_file_update(true);
+  m_hw_state = std::make_shared<HardwareProbeState>();
+  if (!m_connect_hardware) {
+    SetStatusText(_("Hardware connection is off"), 0);
+    SetStatusText(_("Hardware connection is off"), 1);
+  }
   // start timers
   m_service_timer.Start( 1000 );
-  m_controller_timer.Start( 2000 );
+  m_controller_timer.Start( 1000 );
   m_camera_timer.Start( 1000 );
+  CallAfter([this] { PollHardware(); });
 
   m_window_level_scroll_bar->SetRange(65536);
   m_window_level_scroll_bar->SetThumbPosition(500);
@@ -241,6 +320,9 @@ MyMainWindow::MyMainWindow(wxWindow* parent) : MainWindow(parent), m_dcm_process
 }
 
 MyMainWindow::~MyMainWindow() {
+  if (m_hw_state) {
+    m_hw_state->stop.store(true);
+  }
   delete lng;
 
   WSACleanup();
@@ -333,14 +415,11 @@ void MyMainWindow::OnServiceTimer( wxTimerEvent& event ) {
 }
 
 void MyMainWindow::OnControllerTimer( wxTimerEvent& event ) {
-  InitController();
+  PollHardware();
 }
 
 void MyMainWindow::OnCameraTimer( wxTimerEvent& event ) {
-  if (tab == TAB_CAMERA) {
-    if(!InitCamera()){
-      return;
-    }
+  if (tab == TAB_CAMERA && m_camera && m_camera->IsConnected()) {
 
     try {
       m_camera_bitmap->SetBitmap(m_camera->Snapshot(safeStrToDouble(m_camera_exposure_time_text->GetValue())));
@@ -477,6 +556,10 @@ void MyMainWindow::OnLanguageRussian(wxCommandEvent& event) {
 
 void MyMainWindow::OnTabChange(wxNotebookEvent& event) {
   tab = m_tabs->FindPage( m_tabs->GetCurrentPage() );
+  if (tab == TAB_CAMERA && m_connect_hardware) {
+    m_camera_search = true;
+    StartCameraProbe();
+  }
 }
 
 void MyMainWindow::OnLightOnlyWhenCapture(wxCommandEvent &event)
@@ -1423,46 +1506,192 @@ void MyMainWindow::SetupDcmGenerator(){
   }
 }
 
+void MyMainWindow::SetupHardwareConnectControls() {
+  if (!m_panel_controller || m_hw_connect_checkbox) {
+    return;
+  }
+  auto *row = new wxBoxSizer(wxHORIZONTAL);
+  m_hw_connect_checkbox = new wxCheckBox(m_panel_controller, wxID_ANY, _("Connect hardware on startup"));
+  m_hw_connect_checkbox->SetValue(m_connect_hardware);
+  m_hw_retry_button = new wxButton(m_panel_controller, wxID_ANY, _("Retry hardware connection"));
+  row->Add(m_hw_connect_checkbox, 0, wxALL | wxALIGN_CENTER_VERTICAL, 5);
+  row->Add(m_hw_retry_button, 0, wxALL, 5);
+  if (wxSizer *sizer = m_panel_controller->GetSizer()) {
+    sizer->Insert(0, row, 0, wxEXPAND);
+    sizer->Layout();
+  }
+  m_hw_connect_checkbox->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent &event) {
+    SetHardwareConnectEnabled(event.IsChecked(), true);
+  });
+  m_hw_retry_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) {
+    m_camera_search = true;
+    m_controller_retry_at = std::chrono::steady_clock::now();
+    m_camera_retry_at = std::chrono::steady_clock::now();
+    StartControllerProbe();
+    StartCameraProbe();
+  });
+}
+
+void MyMainWindow::SetHardwareConnectEnabled(bool enabled, bool persist) {
+  m_connect_hardware = enabled;
+  if (m_hw_connect_checkbox && m_hw_connect_checkbox->GetValue() != enabled) {
+    m_hw_connect_checkbox->SetValue(enabled);
+  }
+  if (persist) {
+    settings["hardware"]["connect_on_startup"] = enabled ? "1" : "0";
+    _settings_file_update();
+  }
+  if (!enabled) {
+    SetStatusText(_("Hardware connection is off"), 0);
+    SetStatusText(_("Hardware connection is off"), 1);
+    return;
+  }
+  m_camera_search = true;
+  m_controller_retry_at = std::chrono::steady_clock::now();
+  m_camera_retry_at = std::chrono::steady_clock::now();
+  StartControllerProbe();
+  StartCameraProbe();
+}
+
+void MyMainWindow::StartControllerProbe() {
+  if (!m_hw_state || m_hw_state->stop.load()) {
+    return;
+  }
+  int state = m_hw_state->controller.load();
+  if (state == 1) {
+    return;
+  }
+  if (!m_hw_state->controller.compare_exchange_strong(state, 1)) {
+    return;
+  }
+  SetStatusText(_("Connecting to controller.."), 0);
+  const std::string ip = m_controller_ip_address_text
+                             ? std::string(m_controller_ip_address_text->GetValue().ToStdString())
+                             : std::string();
+  const int port = safeStrToInt(m_controller_udp_port_text ? m_controller_udp_port_text->GetValue().ToStdString()
+                                                           : std::string("1000"));
+  m_controller_retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  auto probe = m_hw_state;
+  std::thread([probe, ip, port] {
+    if (probe->stop.load()) {
+      probe->controller.store(3);
+      return;
+    }
+    const bool open = TcpPortOpen(ip, port, 400);
+    probe->controller.store(probe->stop.load() ? 3 : (open ? 2 : 3));
+  }).detach();
+}
+
+void MyMainWindow::StartCameraProbe() {
+  if (!m_hw_state || m_hw_state->stop.load()) {
+    return;
+  }
+  if (m_camera && m_camera->IsConnected()) {
+    SetStatusText(_("Camera connected"), 1);
+    return;
+  }
+  int state = m_hw_state->camera.load();
+  if (state == 1) {
+    return;
+  }
+  if (!m_hw_state->camera.compare_exchange_strong(state, 1)) {
+    return;
+  }
+  SetStatusText(_("Searching for camera..."), 1);
+  if (!m_camera) {
+    m_camera = std::make_shared<Camera>();
+  }
+  m_camera_retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+  auto probe = m_hw_state;
+  auto camera = m_camera;
+  std::thread([probe, camera] {
+    bool connected = false;
+    try {
+      if (!probe->stop.load() && camera) {
+        connected = camera->TryConnect();
+      }
+    } catch (const std::exception &) {
+      connected = false;
+    }
+    probe->camera.store(connected ? 2 : 3);
+  }).detach();
+}
+
+void MyMainWindow::PollHardware() {
+  if (!m_hw_state) {
+    return;
+  }
+  if (!m_connect_hardware) {
+    if (!(m_controller && m_controller->IsConnected())) {
+      SetStatusText(_("Hardware connection is off"), 0);
+    }
+    if (!(m_camera && m_camera->IsConnected())) {
+      SetStatusText(_("Hardware connection is off"), 1);
+    }
+    return;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  const int controller_state = m_hw_state->controller.load();
+  if (m_controller && m_controller->IsConnected()) {
+    SetStatusText(_("Controller connected"), 0);
+  } else if (controller_state == 1) {
+    SetStatusText(_("Connecting to controller.."), 0);
+  } else if (controller_state == 2) {
+    if (!m_controller) {
+      m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
+                                                  safeStrToInt(m_controller_udp_port_text->GetValue().ToStdString()));
+    }
+    if (m_controller->TryConnect()) {
+      SetStatusText(_("Controller connected"), 0);
+      m_hw_state->controller.store(0);
+    } else {
+      SetStatusText(_("Controller not found"), 0);
+      m_hw_state->controller.store(3);
+      m_controller_retry_at = now + std::chrono::seconds(5);
+    }
+  } else if (controller_state == 3) {
+    SetStatusText(_("Controller not found"), 0);
+    if (now >= m_controller_retry_at) {
+      StartControllerProbe();
+    }
+  } else {
+    StartControllerProbe();
+  }
+
+  const int camera_state = m_hw_state->camera.load();
+  if (m_camera && m_camera->IsConnected()) {
+    SetStatusText(_("Camera connected"), 1);
+  } else if (camera_state == 1) {
+    SetStatusText(_("Searching for camera..."), 1);
+  } else if (camera_state == 3) {
+    SetStatusText(_("Camera not found"), 1);
+    if (m_camera_search && now >= m_camera_retry_at) {
+      StartCameraProbe();
+    }
+  } else if (camera_state == 0 && m_camera_search) {
+    StartCameraProbe();
+  }
+}
+
 bool MyMainWindow::InitController()
 {
-  SetStatusText(_("Connecting controller..."), 0);
-
-  if(!m_controller){
-    m_controller = std::make_shared<Controller>(m_controller_ip_address_text->GetValue(),
-                                                safeStrToInt(m_controller_udp_port_text->GetValue()));
-  }
-
-  if (!m_controller->IsConnected()) {
-    m_controller->TryConnect();
-  }
-
-  if (m_controller->IsConnected()) {
-    SetStatusText(_("Controller connected"), 0);
-    return true;
-  }
-
-  return false;
+  PollHardware();
+  return m_controller && m_controller->IsConnected();
 }
 
 bool MyMainWindow::InitCamera()
 {
-  SetStatusText(_("Connecting to camera.."), 1);
-
-  if (!m_camera) {
-    m_camera = std::make_shared<Camera>();
-  }
-
-  if(!m_camera->IsConnected()){
-    // SetStatusText(_("Camera disconnected"), 1);
-    m_camera->TryConnect();
-  }
-
-  if( m_camera->IsConnected())
-  {
+  if (m_camera && m_camera->IsConnected()) {
     SetStatusText(_("Camera connected"), 1);
     return true;
   }
-
+  if (m_connect_hardware) {
+    m_camera_search = true;
+    StartCameraProbe();
+  } else {
+    SetStatusText(_("Hardware connection is off"), 1);
+  }
   return false;
 }
 

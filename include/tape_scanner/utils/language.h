@@ -191,7 +191,7 @@ private:
         wxT("English"),
         wxT("Russian")
     };
-    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14 + 3;
+    static const int lng_str_cnt = 29 + 59 + 101 + 8 + 14 + 3 + 6;
     wxString lng_str[lng_cnt][lng_str_cnt] = {
         {
             //
@@ -411,6 +411,12 @@ private:
             wxT("Open scan..."),
             wxT("--- OPEN SCAN ---"),
             wxT("Pixel spacing: %s x %s mm\n"),
+            wxT("Controller not found"),
+            wxT("Camera not found"),
+            wxT("Searching for camera..."),
+            wxT("Connect hardware on startup"),
+            wxT("Retry hardware connection"),
+            wxT("Hardware connection is off"),
         },
         {
             //
@@ -630,6 +636,12 @@ private:
             wxT("Открыть скан..."),
             wxT("--- ОТКРЫТЬ СКАН ---"),
             wxT("Шаг пикселя: %s x %s мм\n"),
+            wxT("Контроллер не найден"),
+            wxT("Камера не найдена"),
+            wxT("Поиск камеры..."),
+            wxT("Подключать оборудование при запуске"),
+            wxT("Повторить подключение"),
+            wxT("Подключение к оборудованию выключено"),
     },
     };
 };

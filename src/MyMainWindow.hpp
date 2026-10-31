@@ -13,6 +13,9 @@
 #include <tape_scanner/scanner/Scanner.hpp>
 #include <memory.h>
 
+#include <chrono>
+#include <memory>
+
 enum {
   TAB_NONE = -1,
   TAB_VIEWER = 0,
@@ -108,6 +111,11 @@ private:
   bool InitController();
   bool InitCamera();
   bool InitScanner();
+  void SetupHardwareConnectControls();
+  void PollHardware();
+  void StartControllerProbe();
+  void StartCameraProbe();
+  void SetHardwareConnectEnabled(bool enabled, bool persist);
   wxString get_time_str();
   void _settings_file_update(bool set_status = false);
   void _settings_file_create(bool set_status = false);
@@ -211,5 +219,13 @@ private:
   std::shared_ptr<Controller> m_controller;
   std::shared_ptr<Camera> m_camera;
   std::unique_ptr<Scanner> m_scanner;
+  struct HardwareProbeState;
+  std::shared_ptr<HardwareProbeState> m_hw_state;
+  bool m_connect_hardware = true;
+  bool m_camera_search = false;
+  std::chrono::steady_clock::time_point m_controller_retry_at{};
+  std::chrono::steady_clock::time_point m_camera_retry_at{};
+  wxCheckBox* m_hw_connect_checkbox = nullptr;
+  wxButton* m_hw_retry_button = nullptr;
 
 };

@@ -11,17 +11,27 @@ constexpr int DEFAULT_TIMEOUT_SEC = 0;
 }
 
 Controller::Controller(wxString ip_address, int port) {
-    m_address.Hostname(ip_address);
+    // Hostname() делает DNS и на Windows может висеть десятки секунд, если сервера имён нет.
+    m_bad_address = !m_address.IPAddress(ip_address);
+    if (m_bad_address) {
+        return;
+    }
     m_address.Service(port);
     InitSocket();
 }
 
 bool Controller::TryConnect() {
+    if (m_bad_address) {
+        m_status = Status::disconnected;
+        return false;
+    }
     m_status = Status::try_connect;
-    auto res = OpenConnection();
+    const bool res = OpenConnection();
     if (res) {
         m_status = Status::connected;
         InitControllerAfterConnect();
+    } else {
+        m_status = Status::disconnected;
     }
     return res;
 }
@@ -121,14 +131,27 @@ bool Controller::HasFilm() {
 }
 
 void Controller::InitSocket() {
-    m_socket.SetFlags(wxSOCKET_BLOCK | wxSOCKET_WAITALL_WRITE);
+    // Блокирующий сокет на Windows не возвращается из connect(), пока не истечёт TCP-таймаут (~20 с).
+    m_socket.SetFlags(wxSOCKET_NOWAIT);
+    m_socket.SetTimeout(1);
     m_in_buf.resize(in_buf_size);
 }
 
 bool Controller::OpenConnection() {
+  if (m_bad_address) {
+    return false;
+  }
+  m_socket.Close();
+  m_socket.SetFlags(wxSOCKET_NOWAIT);
+  m_socket.SetTimeout(1);
   m_socket.Connect(m_address, false);
-
-  return m_socket.WaitOnConnect(1, 0);
+  const bool finished = m_socket.WaitOnConnect(0, 300);
+  if (!finished || !m_socket.IsConnected()) {
+    m_socket.Close();
+    return false;
+  }
+  m_socket.SetFlags(wxSOCKET_WAITALL_WRITE);
+  return true;
 }
 
 void Controller::InitControllerAfterConnect() {
