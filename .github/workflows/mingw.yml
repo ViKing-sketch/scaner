@@ -1,0 +1,33 @@
+name: MinGW
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  mingw64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-opencv
+            mingw-w64-x86_64-dcmtk
+            mingw-w64-x86_64-pkgconf
+      - name: DCMTK version
+        run: pacman -Q mingw-w64-x86_64-dcmtk
+      - name: Build and test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target test_scan_geometry test_open_scan
+          ./build/test_scan_geometry.exe
+          ./build/test_open_scan.exe

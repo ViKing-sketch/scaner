@@ -53,8 +53,16 @@ std::string DecodeDicomString(std::string_view bytes, std::string_view specific_
 
 /**
  * Читает DICOM в кадры без VOI.
- * Терпит ARRAY: изображение целиком в (2020,0110), разделители с длиной 0xFFFFFFFF,
- * битый (FFFC,FFFC) в хвосте. Стандартный файл (Siemens и наш Secondary Capture) тоже.
- * @return false и текст в error, если это не изображение.
+ * Терпит ARRAY: изображение целиком в (2020,0110), разделители элементов с длиной
+ * 0xFFFFFFFF и хвост (FFFC,FFFC). Эти байты чинятся до DCMTK: сборка MSYS2
+ * (новее 3.6.7) на таком файле возвращает ошибку, а не предупреждение.
+ * Нужен DCMTK 3.6.7 или новее (Ubuntu 24.04 и MSYS2 MinGW64 mingw-w64-x86_64-dcmtk).
+ * @return false и текст в error, если это не изображение. scan при ошибке пустой.
  */
 bool LoadDicomScan(const std::string &path, DicomScan &scan, std::string &error);
+
+/**
+ * То же изображение без DCMTK: явный разбор несжатого LE.
+ * Нужен тестам и как запасной путь, если установленный DCMTK отверг файл.
+ */
+bool ParseRawDicom(const uint8_t *data, size_t size, DicomScan &scan, std::string &error);

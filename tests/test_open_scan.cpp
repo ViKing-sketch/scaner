@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -276,54 +277,108 @@ void TestSamples() {
   CHECK(std::filesystem::exists(siemens_path));
   CHECK(FileHasDicomMarker(array_path.string()));
 
+  std::vector<uint8_t> array_bytes;
+  {
+    std::ifstream input(array_path, std::ios::binary);
+    array_bytes.assign(std::istreambuf_iterator<char>(input), {});
+  }
+  DicomScan raw_array;
+  std::string raw_error;
+  const bool raw_ok = ParseRawDicom(array_bytes.data(), array_bytes.size(), raw_array, raw_error);
+  CHECK(raw_ok);
+  if (!raw_ok) {
+    std::cerr << raw_error << "\n";
+  } else if (raw_array.frames.size() == 1 && raw_array.frames[0].type() == CV_16UC1) {
+    CHECK(raw_array.rows == 1050);
+    CHECK(raw_array.cols == 10965);
+    CHECK(raw_array.frames[0].at<uint16_t>(0, 0) == 16275);
+    CHECK(TagContains(raw_array, "Сканирование"));
+  } else {
+    CHECK(false);
+  }
+
   DicomScan array_scan;
   std::string error;
-  CHECK(LoadDicomScan(array_path.string(), array_scan, error));
-  if (!error.empty()) {
+  const bool array_ok = LoadDicomScan(array_path.string(), array_scan, error);
+  CHECK(array_ok);
+  if (!array_ok) {
     std::cerr << error << "\n";
+  } else if (array_scan.frames.size() == 1 && !array_scan.frames[0].empty() && array_scan.frames[0].type() == CV_16UC1) {
+    CHECK(array_scan.rows == 1050);
+    CHECK(array_scan.cols == 10965);
+    CHECK(array_scan.bits_allocated == 16);
+    CHECK(array_scan.bits_stored == 16);
+    CHECK(array_scan.photometric == "MONOCHROME2");
+    CHECK(array_scan.modality == "CR");
+    CHECK(array_scan.sop_class_uid == UID_ComputedRadiographyImageStorage);
+    CHECK(Near(array_scan.spacing_row_mm, 0.099964));
+    CHECK(Near(array_scan.spacing_col_mm, 0.100095));
+    CHECK(array_scan.frames[0].rows == 1050);
+    CHECK(array_scan.frames[0].cols == 10965);
+    CHECK(array_scan.frames[0].at<uint16_t>(0, 0) == 16275);
+    double min_value = 0;
+    double max_value = 0;
+    cv::minMaxLoc(array_scan.frames[0], &min_value, &max_value);
+    CHECK(min_value == 0);
+    CHECK(max_value == 16275);
+    CHECK(TagContains(array_scan, "Сканирование"));
+    CHECK(TagContains(array_scan, "ARRAY SCANNER"));
+    cv::Mat stored = ReadStoredMono16(array_path.string());
+    CHECK(!stored.empty());
+    if (!stored.empty() && stored.type() == CV_16UC1) {
+      CHECK(stored.rows == 1050);
+      CHECK(stored.cols == 10965);
+      CHECK(stored.at<uint16_t>(0, 0) == 16275);
+    } else {
+      CHECK(false);
+    }
+  } else {
+    CHECK(false);
   }
-  CHECK(array_scan.rows == 1050);
-  CHECK(array_scan.cols == 10965);
-  CHECK(array_scan.bits_allocated == 16);
-  CHECK(array_scan.bits_stored == 16);
-  CHECK(array_scan.photometric == "MONOCHROME2");
-  CHECK(array_scan.modality == "CR");
-  CHECK(array_scan.sop_class_uid == UID_ComputedRadiographyImageStorage);
-  CHECK(Near(array_scan.spacing_row_mm, 0.099964));
-  CHECK(Near(array_scan.spacing_col_mm, 0.100095));
-  CHECK(array_scan.frames.size() == 1);
-  CHECK(array_scan.frames[0].rows == 1050);
-  CHECK(array_scan.frames[0].cols == 10965);
-  CHECK(array_scan.frames[0].type() == CV_16UC1);
-  CHECK(array_scan.frames[0].at<uint16_t>(0, 0) == 16275);
-  double min_value = 0;
-  double max_value = 0;
-  cv::minMaxLoc(array_scan.frames[0], &min_value, &max_value);
-  CHECK(min_value == 0);
-  CHECK(max_value == 16275);
-  CHECK(TagContains(array_scan, "Сканирование"));
-  CHECK(TagContains(array_scan, "ARRAY SCANNER"));
-  cv::Mat stored = ReadStoredMono16(array_path.string());
-  CHECK(stored.rows == 1050);
-  CHECK(stored.cols == 10965);
-  CHECK(stored.at<uint16_t>(0, 0) == 16275);
 
   DicomScan siemens;
-  CHECK(LoadDicomScan(siemens_path.string(), siemens, error));
-  CHECK(siemens.rows == 484);
-  CHECK(siemens.cols == 484);
-  CHECK(siemens.modality == "MR");
-  CHECK(siemens.bits_allocated == 16);
-  CHECK(siemens.bits_stored == 12);
-  CHECK(siemens.frames.size() == 1);
-  CHECK(siemens.frames[0].rows == 484);
-  CHECK(siemens.frames[0].cols == 484);
-  CHECK(Near(siemens.spacing_row_mm, 0.72314049586777));
-  CHECK(Near(siemens.spacing_col_mm, 0.72314049586777));
-  CHECK(cv::countNonZero(siemens.frames[0]) > 0);
+  const bool siemens_ok = LoadDicomScan(siemens_path.string(), siemens, error);
+  CHECK(siemens_ok);
+  if (!siemens_ok) {
+    std::cerr << error << "\n";
+  } else if (siemens.frames.size() == 1 && !siemens.frames[0].empty()) {
+    CHECK(siemens.rows == 484);
+    CHECK(siemens.cols == 484);
+    CHECK(siemens.modality == "MR");
+    CHECK(siemens.bits_allocated == 16);
+    CHECK(siemens.bits_stored == 12);
+    CHECK(siemens.frames[0].rows == 484);
+    CHECK(siemens.frames[0].cols == 484);
+    CHECK(Near(siemens.spacing_row_mm, 0.72314049586777));
+    CHECK(Near(siemens.spacing_col_mm, 0.72314049586777));
+    CHECK(cv::countNonZero(siemens.frames[0]) > 0);
+  } else {
+    CHECK(false);
+  }
 
-  CHECK(!LoadDicomScan((Sample("missing-not-dicom")).string(), siemens, error));
+  DicomScan missing;
+  CHECK(!LoadDicomScan((Sample("missing-not-dicom")).string(), missing, error));
   CHECK(!error.empty());
+  CHECK(missing.frames.empty());
+
+  const auto tainted_path = std::filesystem::temp_directory_path() / "tape_scanner_tainted_tail.dcm";
+  CHECK(saveToDcm(cv::Mat(4, 4, CV_16UC1, cv::Scalar(9)), tainted_path.string()));
+  {
+    std::fstream tainted(tainted_path, std::ios::binary | std::ios::app);
+    const unsigned char junk[] = {0xfc, 0xff, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff};
+    tainted.write(reinterpret_cast<const char *>(junk), sizeof(junk));
+  }
+  DicomScan tainted_scan;
+  const bool tainted_ok = LoadDicomScan(tainted_path.string(), tainted_scan, error);
+  CHECK(tainted_ok);
+  if (tainted_ok && tainted_scan.frames.size() == 1 && !tainted_scan.frames[0].empty()) {
+    CHECK(tainted_scan.frames[0].rows == 4);
+    CHECK(tainted_scan.frames[0].at<uint16_t>(0, 0) == 9);
+  } else {
+    std::cerr << error << "\n";
+    CHECK(false);
+  }
+  std::filesystem::remove(tainted_path);
 }
 
 } // namespace
