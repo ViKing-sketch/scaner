@@ -18,6 +18,7 @@ add_library(tape_scanner_scan STATIC
     src/scanner/Region.cpp
     src/scanner/ScanSession.cpp
     src/scanner/DicomSeries.cpp
+    src/scanner/DicomScan.cpp
     src/scanner/WindowLevel.cpp
 )
 target_include_directories(tape_scanner_scan PUBLIC "include/")
@@ -27,6 +28,15 @@ if(OpenCV_INCLUDE_DIRS)
 endif()
 if(TARGET DCMTK::dcmdata)
     target_link_libraries(tape_scanner_scan PUBLIC DCMTK::dcmdata)
+    if(TARGET DCMTK::dcmimgle)
+        target_link_libraries(tape_scanner_scan PUBLIC DCMTK::dcmimgle)
+    endif()
+    if(TARGET DCMTK::dcmimage)
+        target_link_libraries(tape_scanner_scan PUBLIC DCMTK::dcmimage)
+    endif()
+    if(TARGET DCMTK::dcmjpeg)
+        target_link_libraries(tape_scanner_scan PUBLIC DCMTK::dcmjpeg)
+    endif()
 else()
     target_include_directories(tape_scanner_scan PUBLIC ${DCMTK_INCLUDE_DIRS})
     target_link_libraries(tape_scanner_scan PUBLIC ${DCMTK_LIBRARIES})
@@ -43,6 +53,14 @@ if(MSVC)
     target_compile_options(test_scan_geometry PRIVATE /utf-8)
 endif()
 add_test(NAME test_scan_geometry COMMAND test_scan_geometry)
+
+add_executable(test_open_scan tests/test_open_scan.cpp src/dicom_generator/BinToDcmConverter.cpp)
+target_link_libraries(test_open_scan PRIVATE tape_scanner_scan)
+target_compile_definitions(test_open_scan PRIVATE TAPE_SCANNER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(MSVC)
+    target_compile_options(test_open_scan PRIVATE /utf-8)
+endif()
+add_test(NAME test_open_scan COMMAND test_open_scan)
 
 find_package(wxWidgets QUIET COMPONENTS net core base gl)
 find_package(OpenGL QUIET)

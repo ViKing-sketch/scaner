@@ -2,26 +2,53 @@
 
 #include <wx/log.h>
 
+#include <cstdio>
+
 
 namespace {
 
 constexpr int DEFAULT_TIMEOUT_US = 100;
 constexpr int DEFAULT_TIMEOUT_SEC = 0;
 
+/// Четыре октета и ничего больше. Иначе Hostname() уйдёт в DNS.
+bool IsDottedIPv4(const wxString &text) {
+    const std::string ip = text.ToStdString();
+    unsigned a = 0;
+    unsigned b = 0;
+    unsigned c = 0;
+    unsigned d = 0;
+    char extra = 0;
+    if (std::sscanf(ip.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) {
+        return false;
+    }
+    return a <= 255 && b <= 255 && c <= 255 && d <= 255;
+}
+
 }
 
 Controller::Controller(wxString ip_address, int port) {
-    m_address.Hostname(ip_address);
-    m_address.Service(port);
+    // wx 3.2: IPAddress() только читает адрес. Hostname() для dotted quad
+    // берёт inet_addr и DNS не вызывает. Чужую строку в Hostname не отдаём.
+    if (port < 0 || port > 65535 || !IsDottedIPv4(ip_address) || !m_address.Hostname(ip_address) ||
+        !m_address.Service(static_cast<unsigned short>(port))) {
+        m_bad_address = true;
+        return;
+    }
     InitSocket();
 }
 
 bool Controller::TryConnect() {
+    if (m_bad_address) {
+        m_status = Status::disconnected;
+        return false;
+    }
     m_status = Status::try_connect;
-    auto res = OpenConnection();
+    const bool res = OpenConnection();
     if (res) {
         m_status = Status::connected;
         InitControllerAfterConnect();
+    } else {
+        m_status = Status::disconnected;
     }
     return res;
 }
@@ -121,14 +148,27 @@ bool Controller::HasFilm() {
 }
 
 void Controller::InitSocket() {
-    m_socket.SetFlags(wxSOCKET_BLOCK | wxSOCKET_WAITALL_WRITE);
+    // Блокирующий сокет на Windows не возвращается из connect(), пока не истечёт TCP-таймаут (~20 с).
+    m_socket.SetFlags(wxSOCKET_NOWAIT);
+    m_socket.SetTimeout(1);
     m_in_buf.resize(in_buf_size);
 }
 
 bool Controller::OpenConnection() {
+  if (m_bad_address) {
+    return false;
+  }
+  m_socket.Close();
+  m_socket.SetFlags(wxSOCKET_NOWAIT);
+  m_socket.SetTimeout(1);
   m_socket.Connect(m_address, false);
-
-  return m_socket.WaitOnConnect(1, 0);
+  const bool finished = m_socket.WaitOnConnect(0, 300);
+  if (!finished || !m_socket.IsConnected()) {
+    m_socket.Close();
+    return false;
+  }
+  m_socket.SetFlags(wxSOCKET_WAITALL_WRITE);
+  return true;
 }
 
 void Controller::InitControllerAfterConnect() {

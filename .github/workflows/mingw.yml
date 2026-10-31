@@ -1,0 +1,40 @@
+name: MinGW
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Classic mingw64 no longer publishes wxWidgets 3.2 or DCMTK (packages.msys2.org 404).
+  # UCRT64 is the current MSYS2 gcc toolchain that still has both, including wx 3.2 msw.
+  ucrt64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-opencv
+            mingw-w64-ucrt-x86_64-dcmtk
+            mingw-w64-ucrt-x86_64-wxwidgets3.2-msw
+            mingw-w64-ucrt-x86_64-glm
+            mingw-w64-ucrt-x86_64-pkgconf
+      - name: Tool versions
+        run: |
+          pacman -Q mingw-w64-ucrt-x86_64-dcmtk mingw-w64-ucrt-x86_64-wxwidgets3.2-msw mingw-w64-ucrt-x86_64-glm
+          wx-config --version
+      - name: Build app and tests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target tape_scanner test_scan_geometry test_open_scan
+          test -f build/tape_scanner.exe
+          ./build/test_scan_geometry.exe
+          ./build/test_open_scan.exe

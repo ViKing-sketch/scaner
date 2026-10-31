@@ -28,7 +28,7 @@ inline WindowLevel WindowFromMinMax(double min_value, double max_value) {
 }
 
 inline std::pair<int, int> RawMinMax(const cv::Mat &image) {
-  if (image.empty() || image.type() != CV_16UC1) {
+  if (image.empty() || (image.type() != CV_16UC1 && image.type() != CV_8UC1)) {
     return {0, 0};
   }
   double min_value = 0;

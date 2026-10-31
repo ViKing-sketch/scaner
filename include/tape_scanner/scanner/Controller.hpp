@@ -18,11 +18,13 @@ public:
         UNKNOWN
     };
 
+    /// Числовой IPv4, без DNS. TryConnect ждёт не дольше 300 мс и не блокирует окно надолго.
     Controller(wxString ip_address, int port);
     ~Controller() override = default;
 
     bool TryConnect();
     bool IsConnected();
+    bool HasAddress() const { return !m_bad_address; }
 
     void SendAnyCommand(const std::string& any_command);
     void GoCameraTo(int x, bool wait = true);
@@ -53,6 +55,7 @@ private:
 
     wxIPV4address m_address;
     wxSocketClient m_socket;
+    bool m_bad_address = false;
     enum class Status { try_connect, connected, disconnected };
     Status m_status = Status::disconnected;
     int m_cur_camera_speed = 30000;

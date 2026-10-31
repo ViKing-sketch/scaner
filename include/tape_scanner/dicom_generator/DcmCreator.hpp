@@ -1,11 +1,16 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "DicomGeneratorUtils.hpp"
+#include <tape_scanner/scanner/DicomFileMeta.hpp>
+#include <tape_scanner/scanner/DicomNumbers.hpp>
+#include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <dcmtk/dcmdata/dcdeftag.h>
 #include <dcmtk/dcmdata/dcfilefo.h>
 #include <dcmtk/dcmdata/dcmetinf.h>
@@ -78,9 +83,12 @@ void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, 
   dataset->putAndInsertOFStringArray(DCM_SOPInstanceUID, dcmGenerateUniqueIdentifier(cstr, SITE_INSTANCE_UID_ROOT));
   dataset->putAndInsertOFStringArray(DCM_StudyID, dcmGenerateUniqueIdentifier(cstr, SITE_STUDY_UID_ROOT));
   dataset->putAndInsertOFStringArray(DCM_BurnedInAnnotation, "NO");
-  dataset->putAndInsertOFStringArray(DCM_NominalScannedPixelSpacing, "1.0\\1.0"); // mm, row\column
-  dataset->putAndInsertOFStringArray(DCM_PixelSpacing, "1.0\\1.0");               // mm, row\column
-  dataset->putAndInsertOFStringArray(DCM_PixelAspectRatio, "[1, 1]");             // [row, column]
+  const ScanGeometry nominal_geometry;
+  const std::string nominal_spacing = FormatDicomDecimal(nominal_geometry.RowSpacingMm()) + "\\" +
+                                      FormatDicomDecimal(nominal_geometry.ColSpacingMm());
+  dataset->putAndInsertString(DCM_NominalScannedPixelSpacing, nominal_spacing.c_str());
+  dataset->putAndInsertString(DCM_PixelSpacing, nominal_spacing.c_str());
+  dataset->putAndInsertString(DCM_PixelAspectRatio, kDicomPixelAspectRatio);
   dataset->putAndInsertOFStringArray(DCM_PhotometricInterpretation, "MONOCHROME2");
   dataset->putAndInsertOFStringArray(DCM_RescaleIntercept, "0");
   dataset->putAndInsertOFStringArray(DCM_RescaleSlope, "1");
@@ -137,9 +145,9 @@ void CreateDcm(string dest_file_path, size_t width, size_t height, size_t bits, 
   }
   // insert frames binary data
   dataset->putAndInsertUint8Array(DCM_PixelData, buf.data(), frames_bin_size);
-  // save destination file
+  MatchDicomMediaStorage(metainfo, dataset);
   condition = dcm_file.saveFile((const OFFilename)dest_file_path.c_str(), writeXfer, EET_ExplicitLength, EGL_recalcGL,
-                                EPD_noChange, OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_fileformat);
+                                EPD_noChange, OFstatic_cast(Uint32, 0), OFstatic_cast(Uint32, 0), EWM_updateMeta);
   if (condition.bad()) {
     throw runtime_error("ERROR: Failed to save resulting DICOM file.\n");
   }

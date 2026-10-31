@@ -40,6 +40,9 @@ struct DicomWriteParams {
   double pixel_spacing_col_mm = 0.042;
   /// Image Position Patient (0020,0032), средняя координата: индекс первой строки сегмента × шаг строки, мм.
   double image_position_row_mm = 0;
+  /// UTF-8. Пустое имя записывается как Anonymous. В файл всегда кладётся ISO_IR 192.
+  std::string patient_name_utf8;
+  std::string patient_id_utf8;
 };
 
 /**

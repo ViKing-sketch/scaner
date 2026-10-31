@@ -1,8 +1,9 @@
 #include <tape_scanner/scanner/Utils.hpp>
+#include <tape_scanner/scanner/DicomFileMeta.hpp>
+#include <tape_scanner/scanner/DicomNumbers.hpp>
 #include <tape_scanner/scanner/ScanGeometry.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
-#include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -146,26 +147,6 @@ std::string MakeUid(const char *root) {
   return std::string(dcmGenerateUniqueIdentifier(buf, root));
 }
 
-/// DICOM Decimal String: без хвостовых нулей, не длиннее 16 символов.
-std::string FormatDicomDecimal(double value) {
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%.6f", value);
-  std::string text(buf);
-  const auto dot = text.find('.');
-  if (dot != std::string::npos) {
-    while (!text.empty() && text.back() == '0') {
-      text.pop_back();
-    }
-    if (!text.empty() && text.back() == '.') {
-      text.pop_back();
-    }
-  }
-  if (text.empty()) {
-    return "0";
-  }
-  return text;
-}
-
 /**
  * Среднее 2×2.
  * sum считается в uint32_t: 4 * 65535 = 262140, это не влезает в uint16
@@ -253,6 +234,8 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
       FormatDicomDecimal(params.pixel_spacing_row_mm) + "\\" + FormatDicomDecimal(params.pixel_spacing_col_mm);
   const std::string image_position = std::string("0\\") + FormatDicomDecimal(params.image_position_row_mm) + "\\0";
   const std::string instance_number = std::to_string(params.instance_number);
+  const std::string patient = params.patient_name_utf8.empty() ? std::string("Anonymous") : params.patient_name_utf8;
+  const std::string patient_id = params.patient_id_utf8.empty() ? std::string("123456") : params.patient_id_utf8;
 
   DcmFileFormat fileFormat;
   DcmDataset *dataset = fileFormat.getDataset();
@@ -269,8 +252,8 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
   dataset->putAndInsertString(DCM_InstanceNumber, instance_number.c_str());
   dataset->putAndInsertString(DCM_Modality, "OT");
   dataset->putAndInsertString(DCM_ConversionType, "DF");
-  dataset->putAndInsertString(DCM_PatientName, "Anonymous");
-  dataset->putAndInsertString(DCM_PatientID, "123456");
+  dataset->putAndInsertString(DCM_PatientName, patient.c_str());
+  dataset->putAndInsertString(DCM_PatientID, patient_id.c_str());
   dataset->putAndInsertString(DCM_PhotometricInterpretation, "MONOCHROME2");
   dataset->putAndInsertUint16(DCM_SamplesPerPixel, 1);
   dataset->putAndInsertUint16(DCM_BitsAllocated, 16);
@@ -290,7 +273,9 @@ bool saveToDcm(const cv::Mat &image, const std::string &filename, const DicomWri
     return false;
   }
 
-  status = fileFormat.saveFile(filename.c_str(), EXS_LittleEndianExplicit);
+  MatchDicomMediaStorage(meta, dataset);
+  status = fileFormat.saveFile(filename.c_str(), EXS_LittleEndianExplicit, EET_UndefinedLength, EGL_recalcGL,
+                                EPD_noChange, 0, 0, EWM_updateMeta);
   if (status.bad()) {
     std::cerr << "Ошибка сохранения DICOM-файла: " << status.text() << std::endl;
     return false;

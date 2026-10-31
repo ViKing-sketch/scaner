@@ -1,5 +1,6 @@
 #include "tape_scanner/scanner/Utils.hpp"
 #include <tape_scanner/scanner/Camera.hpp>
+#include <wx/thread.h>
 #include <opencv2/photo.hpp>
 
 namespace {
@@ -35,8 +36,10 @@ bool Camera::TryConnect() {
 
     int h_camera = GetFirstCamera();
     InitResponses();
-  } catch (std::runtime_error &e) {
-    wxLogError(wxString::Format("Connect to camera error! %s", e.what()));
+  } catch (const std::exception &e) {
+    if (wxThread::IsMain()) {
+      wxLogError(wxString::Format("Connect to camera error! %s", e.what()));
+    }
     return false;
   }
 
