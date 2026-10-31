@@ -2,21 +2,38 @@
 
 #include <wx/log.h>
 
+#include <cstdio>
+
 
 namespace {
 
 constexpr int DEFAULT_TIMEOUT_US = 100;
 constexpr int DEFAULT_TIMEOUT_SEC = 0;
 
+/// Четыре октета и ничего больше. Иначе Hostname() уйдёт в DNS.
+bool IsDottedIPv4(const wxString &text) {
+    const std::string ip = text.ToStdString();
+    unsigned a = 0;
+    unsigned b = 0;
+    unsigned c = 0;
+    unsigned d = 0;
+    char extra = 0;
+    if (std::sscanf(ip.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) {
+        return false;
+    }
+    return a <= 255 && b <= 255 && c <= 255 && d <= 255;
+}
+
 }
 
 Controller::Controller(wxString ip_address, int port) {
-    // Hostname() делает DNS и на Windows может висеть десятки секунд, если сервера имён нет.
-    m_bad_address = !m_address.IPAddress(ip_address);
-    if (m_bad_address) {
+    // wx 3.2: IPAddress() только читает адрес. Hostname() для dotted quad
+    // берёт inet_addr и DNS не вызывает. Чужую строку в Hostname не отдаём.
+    if (port < 0 || port > 65535 || !IsDottedIPv4(ip_address) || !m_address.Hostname(ip_address) ||
+        !m_address.Service(static_cast<unsigned short>(port))) {
+        m_bad_address = true;
         return;
     }
-    m_address.Service(port);
     InitSocket();
 }
 
